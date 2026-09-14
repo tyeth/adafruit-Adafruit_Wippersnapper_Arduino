@@ -12,8 +12,10 @@
  * BSD license, all text here must be included in any redistribution.
  *
  */
+
 #if defined(ARDUINO_MAGTAG29_ESP32S2) || defined(ARDUINO_METRO_ESP32S2) ||     \
-    defined(ARDUINO_FUNHOUSE_ESP32S2) || defined(ADAFRUIT_PYPORTAL_M4_TITANO) ||  \
+    defined(ARDUINO_METRO_ESP32S3) || defined(ARDUINO_FUNHOUSE_ESP32S2) ||     \
+    defined(ADAFRUIT_PYPORTAL_M4_TITANO) ||                                    \
     defined(ADAFRUIT_METRO_M4_AIRLIFT_LITE) || defined(ADAFRUIT_PYPORTAL) ||   \
     defined(ARDUINO_ADAFRUIT_FEATHER_ESP32S2) ||                               \
     defined(ARDUINO_ADAFRUIT_QTPY_ESP32S2) ||                                  \
@@ -22,11 +24,15 @@
     defined(ARDUINO_ADAFRUIT_QTPY_ESP32S3_NOPSRAM) ||                          \
     defined(ARDUINO_ADAFRUIT_FEATHER_ESP32S3) ||                               \
     defined(ARDUINO_ADAFRUIT_FEATHER_ESP32S3_TFT) ||                           \
-    defined(ARDUINO_RASPBERRY_PI_PICO_W) ||                                    \
+    defined(ARDUINO_ARCH_RP2040) || defined(ARDUINO_ESP32S3_DEV) ||            \
     defined(ARDUINO_ADAFRUIT_FEATHER_ESP32S3_REVTFT) ||                        \
     defined(ARDUINO_ADAFRUIT_FEATHER_ESP32S2_REVTFT) ||                        \
-    defined(ARDUINO_ADAFRUIT_QTPY_ESP32S3_N4R2)
+    defined(ARDUINO_ADAFRUIT_QTPY_ESP32S3_N4R2) ||                             \
+    defined(ARDUINO_XIAO_ESP32S3) || \
+    defined(ARDUINO_ADAFRUIT_FRUITJAM_RP2350)
+
 #include "Wippersnapper_FS.h"
+#include "print_dependencies.h"
 // On-board external flash (QSPI or SPI) macros should already
 // defined in your board variant if supported
 // - EXTERNAL_FLASH_USE_QSPI
@@ -88,6 +94,13 @@ bool setVolumeLabel() {
 */
 /**************************************************************************/
 Wippersnapper_FS::Wippersnapper_FS() {
+#if PRINT_DEPENDENCIES
+  WS_DEBUG_PRINTLN("Build Dependencies:");
+  WS_DEBUG_PRINTLN("*********************");
+  WS_DEBUG_PRINTLN(project_dependencies);
+  WS_DEBUG_PRINTLN("*********************");
+  WS_PRINTER.flush();
+#endif
   // Detach USB device during init.
   TinyUSBDevice.detach();
   // Wait for detach
@@ -96,6 +109,7 @@ Wippersnapper_FS::Wippersnapper_FS() {
   // If a filesystem does not already exist - attempt to initialize a new
   // filesystem
   if (!initFilesystem() && !initFilesystem(true)) {
+    TinyUSBDevice.attach();
     setStatusLEDColor(RED);
     fsHalt("ERROR Initializing Filesystem");
   }
@@ -208,9 +222,12 @@ void Wippersnapper_FS::initUSBMSC() {
   // init MSC
   usb_msc.begin();
 
-  // re-attach the usb device
+  // Attach MSC and wait for enumeration
+  if (TinyUSBDevice.mounted()) {
+    TinyUSBDevice.detach();
+    delay(10);
+  }
   TinyUSBDevice.attach();
-  // wait for enumeration
   delay(500);
 }
 
@@ -223,6 +240,13 @@ void Wippersnapper_FS::initUSBMSC() {
 bool Wippersnapper_FS::configFileExists() {
   // Does secrets.json file exist?
   if (!wipperFatFs.exists("/secrets.json"))
+    return false;
+  File32 file = wipperFatFs.open("/secrets.json", FILE_READ);
+  if (!file)
+    return false;
+  int firstChar = file.peek();
+  file.close();
+  if (firstChar <= 0 || firstChar == 255)
     return false;
   return true;
 }
@@ -266,17 +290,39 @@ bool Wippersnapper_FS::createBootFile() {
   if (bootFile) {
     bootFile.println("Adafruit.io WipperSnapper");
 
-    bootFile.print("Firmware Version: ");
+    bootFile.print("WipperSnapper Firmware Version: ");
     bootFile.println(WS_VERSION);
 
     bootFile.print("Board ID: ");
     bootFile.println(BOARD_ID);
+
+#if defined(ADAFRUIT_PYPORTAL_M4_TITANO) || defined(USE_AIRLIFT) ||          \
+    defined(ADAFRUIT_METRO_M4_AIRLIFT_LITE) || defined(ADAFRUIT_PYPORTAL) || \
+    defined(ARDUINO_ADAFRUIT_FRUITJAM_RP2350)
+    bootFile.print("AirLift Coprocessor Firmware Version: ");
+    bootFile.println(WS._airlift_version);
+#endif
 
     sprintf(sMAC, "%02X:%02X:%02X:%02X:%02X:%02X", WS._macAddr[0],
             WS._macAddr[1], WS._macAddr[2], WS._macAddr[3], WS._macAddr[4],
             WS._macAddr[5]);
     bootFile.print("MAC Address: ");
     bootFile.println(sMAC);
+
+#if PRINT_DEPENDENCIES
+    bootFile.println("Build dependencies:");
+    bootFile.println(project_dependencies);
+#endif
+
+// Print ESP-specific info to boot file
+#ifdef ARDUINO_ARCH_ESP32
+    // Get version of ESP-IDF
+    bootFile.print("ESP-IDF Version: ");
+    bootFile.println(ESP.getSdkVersion());
+    // Get version of this core
+    bootFile.print("ESP32 Core Version: ");
+    bootFile.println(ESP.getCoreVersion());
+#endif
 
     bootFile.flush();
     bootFile.close();
@@ -295,36 +341,26 @@ bool Wippersnapper_FS::createBootFile() {
 void Wippersnapper_FS::createSecretsFile() {
   // Open file for writing
   File32 secretsFile = wipperFatFs.open("/secrets.json", FILE_WRITE);
-  
+  secretsFile.truncate(0);
   // Create a default secretsConfig structure
   secretsConfig secretsConfig;
   strcpy(secretsConfig.aio_user, "YOUR_IO_USERNAME_HERE");
   strcpy(secretsConfig.aio_key, "YOUR_IO_KEY_HERE");
   strcpy(secretsConfig.network.ssid, "YOUR_WIFI_SSID_HERE");
   strcpy(secretsConfig.network.pass, "YOUR_WIFI_PASS_HERE");
-  secretsConfig.status_pixel_brightness = 0.2;
+  secretsConfig.status_pixel_brightness = STATUS_PIXEL_BRIGHTNESS_DEFAULT;
 
-  // Create and fill JSON document from secretsConfig
+  // Serialize the struct to a JSON document
   JsonDocument doc;
   doc.set(secretsConfig);
-
-  // Serialize JSON to file
   serializeJsonPretty(doc, secretsFile);
-
-  // Flush and close file
   secretsFile.flush();
   secretsFile.close();
-  delay(2500);
 
-  // Signal to user that action must be taken (edit secrets.json)
   writeToBootOut("ERROR: Please edit the secrets.json file. Then, reset your board.\n");
-#ifdef USE_DISPLAY
-  WS._ui_helper->show_scr_error(
-      "INVALID SETTINGS FILE",
-      "The settings.json file on the WIPPER drive contains default values. "
-      "Please edit it to reflect your Adafruit IO and network credentials. "
-      "When you're done, press RESET on the board.");
-#endif
+  // Re-attach the USB device for file access
+  delay(500);
+  initUSBMSC();
   fsHalt("ERROR: Please edit the secrets.json file. Then, reset your board.");
 }
 
@@ -344,34 +380,86 @@ void Wippersnapper_FS::parseSecrets() {
   JsonDocument doc;
   DeserializationError error = deserializeJson(doc, secretsFile);
   if (error) {
-    fsHalt(String("ERROR: Unable to parse secrets.json file - deserializeJson() failed with code") + error.c_str());
+    fsHalt(String("ERROR: Unable to parse secrets.json file - "
+                  "deserializeJson() failed with code") +
+           error.c_str());
+  }
+
+  if (doc.containsKey("network_type_wifi")) {
+    // set default network config
+    convertFromJson(doc["network_type_wifi"], WS._config.network);
+
+    if (!doc["network_type_wifi"].containsKey("alternative_networks")) {
+      // do nothing extra, we already have the only network
+      WS_DEBUG_PRINTLN("Found single wifi network in secrets.json");
+
+    } else if (doc["network_type_wifi"]["alternative_networks"]
+                   .is<JsonArray>()) {
+
+      WS_DEBUG_PRINTLN("Found multiple wifi networks in secrets.json");
+      // Parse network credentials from array in secrets
+      JsonArray altnetworks = doc["network_type_wifi"]["alternative_networks"];
+      int8_t altNetworkCount = (int8_t)altnetworks.size();
+      WS_DEBUG_PRINT("Network count: ");
+      WS_DEBUG_PRINTLN(altNetworkCount);
+      if (altNetworkCount == 0) {
+        fsHalt("ERROR: No alternative network entries found under "
+               "network_type_wifi.alternative_networks in secrets.json!");
+      }
+      // check if over 3, warn user and take first three
+      for (int i = 0; i < altNetworkCount; i++) {
+        if (i >= 3) {
+          WS_DEBUG_PRINT("WARNING: More than 3 networks in secrets.json, "
+                         "only the first 3 will be used. Not using ");
+          WS_DEBUG_PRINTLN(altnetworks[i]["network_ssid"].as<const char *>());
+          break;
+        }
+        convertFromJson(altnetworks[i], WS._multiNetworks[i]);
+        WS_DEBUG_PRINT("Added SSID: ");
+        WS_DEBUG_PRINTLN(WS._multiNetworks[i].ssid);
+        WS_DEBUG_PRINT("PASS: ");
+        WS_DEBUG_PRINTLN(WS._multiNetworks[i].pass);
+      }
+      WS._isWiFiMulti = true;
+    } else {
+      fsHalt("ERROR: Unrecognised value type for "
+             "network_type_wifi.alternative_networks in secrets.json!");
+    }
+  } else {
+    fsHalt("ERROR: Could not find network_type_wifi in secrets.json!");
   }
 
   // Extract a config struct from the JSON document
-   WS._config =  doc.as<secretsConfig>();
+  WS._config = doc.as<secretsConfig>();
 
   // Validate the config struct is not filled with default values
-  if (strcmp(WS._config.aio_user, "YOUR_IO_USERNAME_HERE") == 0 || strcmp(WS._config.aio_key, "YOUR_IO_KEY_HERE") == 0) {
-    writeToBootOut("ERROR: Invalid IO credentials in secrets.json! TO FIX: Please change io_username and io_key to match your Adafruit IO credentials!\n");
-#ifdef USE_DISPLAY
-    WS._ui_helper->show_scr_error(
-        "INVALID IO CREDS",
-        "The \"io_username/io_key\" fields within secrets.json are invalid, please "
-        "change it to match your Adafruit IO credentials. Then, press RESET.");
-#endif
-    fsHalt("ERROR: Invalid IO credentials in secrets.json! TO FIX: Please change io_username and io_key to match your Adafruit IO credentials!");
+  if (strcmp(WS._config.aio_user, "YOUR_IO_USERNAME_HERE") == 0 ||
+      strcmp(WS._config.aio_key, "YOUR_IO_KEY_HERE") == 0) {
+    writeToBootOut(
+        "ERROR: Invalid IO credentials in secrets.json! TO FIX: Please change "
+        "io_username and io_key to match your Adafruit IO credentials!\n");
+
+    fsHalt(
+        "ERROR: Invalid IO credentials in secrets.json! TO FIX: Please change "
+        "io_username and io_key to match your Adafruit IO credentials!");
   }
 
-  if (strcmp(WS._config.network.ssid, "YOUR_WIFI_SSID_HERE") == 0 || strcmp(WS._config.network.pass, "YOUR_WIFI_PASS_HERE") == 0) {
-    writeToBootOut("ERROR: Invalid network credentials in secrets.json! TO FIX: Please change network_ssid and network_password to match your Adafruit IO credentials!\n");
-#ifdef USE_DISPLAY
-    WS._ui_helper->show_scr_error(
-        "INVALID NETWORK",
-        "The \"network_ssid and network_password\" fields within secrets.json are invalid, please "
-        "change it to match your WiFi credentials. Then, press RESET.");
-#endif
-    fsHalt("ERROR: Invalid network credentials in secrets.json! TO FIX: Please change network_ssid and network_password to match your Adafruit IO credentials!");
+  if (strcmp(WS._config.network.ssid, "YOUR_WIFI_SSID_HERE") == 0 ||
+      strcmp(WS._config.network.pass, "YOUR_WIFI_PASS_HERE") == 0) {
+    writeToBootOut("ERROR: Invalid network credentials in secrets.json! TO "
+                   "FIX: Please change network_ssid and network_password to "
+                   "match your Adafruit IO credentials!\n");
+
+    fsHalt("ERROR: Invalid network credentials in secrets.json! TO FIX: Please "
+           "change network_ssid and network_password to match your Adafruit IO "
+           "credentials!");
   }
+
+  // specify type of value for json key, by using the |operator to include
+  // a typed default value equivalent of with .as<float> w/ default value
+  // https://arduinojson.org/v7/api/jsonvariant/or/
+  WS._config.status_pixel_brightness =
+      doc["status_pixel_brightness"] | (float)STATUS_PIXEL_BRIGHTNESS_DEFAULT;
 
   // Close secrets.json file
   secretsFile.close();
@@ -406,8 +494,6 @@ void Wippersnapper_FS::writeToBootOut(PGM_P str) {
 */
 /**************************************************************************/
 void Wippersnapper_FS::fsHalt(String msg) {
-  TinyUSBDevice.attach();
-  delay(500);
   statusLEDSolid(WS_LED_STATUS_FS_WRITE);
   while (1) {
     WS_DEBUG_PRINTLN("Fatal Error: Halted execution!");
@@ -416,63 +502,6 @@ void Wippersnapper_FS::fsHalt(String msg) {
     yield();
   }
 }
-
-#ifdef ARDUINO_FUNHOUSE_ESP32S2
-void Wippersnapper_FS::createDisplayConfig() {
-  // Open file for writing
-  File32 displayFile = wipperFatFs.open("/display_config.json", FILE_WRITE);
-
-  // Create a default displayConfig structure
-  displayConfig displayConfig;
-  strcpy(displayConfig.driver, "ST7789");
-  displayConfig.width = 240;
-  displayConfig.height = 240;
-  displayConfig.rotation = 0;
-  displayConfig.spiConfig.pinCs = 40;
-  displayConfig.spiConfig.pinDc = 39;
-  displayConfig.spiConfig.pinMosi = 0;
-  displayConfig.spiConfig.pinSck = 0;
-  displayConfig.spiConfig.pinRst = 41;
-
-  // Create and fill JSON document from displayConfig
-  JsonDocument doc;
-  if (!doc.set(displayConfig)) {
-    fsHalt("ERROR: Unable to set displayConfig, no space in arduinoJSON document!");
-  }
-  // Write the file out to the filesystem
-  serializeJsonPretty(doc, displayFile);
-  displayFile.flush();
-  displayFile.close();
-  delay(2500); // give FS some time to write the file
-}
-
-void Wippersnapper_FS::parseDisplayConfig(displayConfig &dispCfg) {
-  // Check if display_config.json file exists, if not, generate it
-  if (!wipperFatFs.exists("/display_config.json")) {
-    WS_DEBUG_PRINTLN("Could not find display_config.json, generating...");
-#ifdef ARDUINO_FUNHOUSE_ESP32S2
-    createDisplayConfig(); // generate a default display_config.json for FunHouse
-#endif
-  }
-
-  // Attempt to open file for JSON parsing
-  File32 file = wipperFatFs.open("/display_config.json", FILE_READ);
-  if (!file) {
-    fsHalt("FATAL ERROR: Unable to open display_config.json for parsing");
-  }
-
-  // Attempt to deserialize the file's json document
-  JsonDocument doc;
-  DeserializationError error = deserializeJson(doc, file);
-  if (error) {
-    fsHalt(String("FATAL ERROR: Unable to parse display_config.json - deserializeJson() failed with code") + error.c_str());
-  }
-  // Close the file, we're done with it
-  file.close();
-  // Extract a displayConfig struct from the JSON document
-  dispCfg = doc.as<displayConfig>();
-}
-#endif // ARDUINO_FUNHOUSE_ESP32S2
 
 /**************************************************************************/
 /*!

@@ -32,13 +32,13 @@ WipperSnapper_Component_I2C::WipperSnapper_Component_I2C(
     wippersnapper_i2c_v1_I2CBusInitRequest *msgInitRequest) {
   WS_DEBUG_PRINTLN("EXEC: New I2C Port ");
   WS_DEBUG_PRINT("\tPort #: ");
-  WS_DEBUG_PRINTLN(msgInitRequest->i2c_port_number);
+  WS_DEBUG_PRINTLNVAR(msgInitRequest->i2c_port_number);
   WS_DEBUG_PRINT("\tSDA Pin: ");
-  WS_DEBUG_PRINTLN(msgInitRequest->i2c_pin_sda);
+  WS_DEBUG_PRINTLNVAR(msgInitRequest->i2c_pin_sda);
   WS_DEBUG_PRINT("\tSCL Pin: ");
-  WS_DEBUG_PRINTLN(msgInitRequest->i2c_pin_scl);
+  WS_DEBUG_PRINTLNVAR(msgInitRequest->i2c_pin_scl);
   WS_DEBUG_PRINT("\tFrequency (Hz): ");
-  WS_DEBUG_PRINTLN(msgInitRequest->i2c_frequency);
+  WS_DEBUG_PRINTLNVAR(msgInitRequest->i2c_frequency);
 
 #if defined(PIN_I2C_POWER)
   // turn on the I2C power by setting pin to opposite of 'rest state'
@@ -82,7 +82,6 @@ WipperSnapper_Component_I2C::WipperSnapper_Component_I2C(
     } else {
       _isInit = true; // if the peripheral was configured incorrectly
     }
-    _i2c->setClock(50000);
 #elif defined(ARDUINO_ARCH_ESP8266)
     _i2c = new TwoWire();
     _i2c->begin(msgInitRequest->i2c_pin_sda, msgInitRequest->i2c_pin_scl);
@@ -104,6 +103,8 @@ WipperSnapper_Component_I2C::WipperSnapper_Component_I2C(
     _portNum = msgInitRequest->i2c_port_number;
     _busStatusResponse = wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_SUCCESS;
   }
+
+  WS.runNetFSM();
 }
 
 /*************************************************************/
@@ -143,8 +144,6 @@ wippersnapper_i2c_v1_BusResponse WipperSnapper_Component_I2C::getBusStatus() {
 /************************************************************************/
 wippersnapper_i2c_v1_I2CBusScanResponse
 WipperSnapper_Component_I2C::scanAddresses() {
-  uint8_t endTransmissionRC;
-  uint16_t address;
   wippersnapper_i2c_v1_I2CBusScanResponse scanResp =
       wippersnapper_i2c_v1_I2CBusScanResponse_init_zero;
 
@@ -156,37 +155,46 @@ WipperSnapper_Component_I2C::scanAddresses() {
 
   // Scan all I2C addresses between 0x08 and 0x7F inclusive and return a list of
   // those that respond.
-  WS_DEBUG_PRINTLN("EXEC: I2C Scan");
-  for (address = 0x08; address < 0x7F; address++) {
+  WS_DEBUG_PRINTLN("[i2c]: Scanning I2C Bus for Devices...");
+  for (uint8_t address = 1; address < 127; ++address) {
+    WS_DEBUG_PRINT("[i2c] Scanning Address: 0x");
+    WS_DEBUG_PRINTHEX(address);
+    WS_DEBUG_PRINTLN("");
     _i2c->beginTransmission(address);
-    endTransmissionRC = _i2c->endTransmission();
+    uint8_t endTransmissionRC = _i2c->endTransmission();
 
-#if defined(ARDUINO_ARCH_ESP32)
-    // Check endTransmission()'s return code (Arduino-ESP32 ONLY)
-    // https://github.com/espressif/arduino-esp32/blob/master/libraries/Wire/src/Wire.cpp
-    if (endTransmissionRC == 5) {
-      WS_DEBUG_PRINTLN("ESP_ERR_TIMEOUT: I2C Bus Busy");
-      scanResp.bus_response =
-          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_ERROR_HANG;
-      // NOTE: ESP-IDF appears to handle this "behind the scenes" by
-      // resetting/clearing the bus. The user should be prompted to
-      // perform a bus scan again.
-      break;
-    } else if (endTransmissionRC == 7) {
-      WS_DEBUG_PRINT("I2C_ESP_ERR: SDA/SCL shorted, requests queued: ");
-      WS_DEBUG_PRINTLN(endTransmissionRC);
-      break;
-    }
-#endif
-
-    // Found device!
     if (endTransmissionRC == 0) {
-      WS_DEBUG_PRINT("Found I2C Device at 0x");
-      WS_DEBUG_PRINTLN(address);
+      WS_DEBUG_PRINTLN("[i2c] Found Device!");
       scanResp.addresses_found[scanResp.addresses_found_count] =
           (uint32_t)address;
       scanResp.addresses_found_count++;
     }
+#if defined(ARDUINO_ARCH_ESP32)
+    // Check endTransmission()'s return code (Arduino-ESP32 ONLY)
+    else if (endTransmissionRC == 3) {
+      WS_DEBUG_PRINTLN("[i2c] Did not find device: NACK on transmit of data!");
+      continue;
+    } else if (endTransmissionRC == 2) {
+      WS_DEBUG_PRINTLN(
+          "[i2c] Did not find device: NACK on transmit of address!");
+      continue;
+    } else if (endTransmissionRC == 1) {
+      WS_DEBUG_PRINTLN(
+          "[i2c] Did not find device: data too long to fit in xmit buffer!");
+      continue;
+    } else if (endTransmissionRC == 4) {
+      WS_DEBUG_PRINTLN(
+          "[i2c] Did not find device: Unspecified bus error occurred!");
+      continue;
+    } else if (endTransmissionRC == 5) {
+      WS_DEBUG_PRINTLN("[i2c] Did not find device: Bus timed out!");
+      continue;
+    } else {
+      WS_DEBUG_PRINTLN(
+          "[i2c] Did not find device: Unknown bus error has occurred!");
+      continue;
+    }
+#endif
   }
 
 #ifndef ARDUINO_ARCH_ESP32
@@ -195,8 +203,9 @@ WipperSnapper_Component_I2C::scanAddresses() {
   WS.feedWDT();
 #endif
 
-  WS_DEBUG_PRINT("I2C Devices Found: ")
-  WS_DEBUG_PRINTLN(scanResp.addresses_found_count);
+  WS_DEBUG_PRINT("[i2c] Scan Complete! Found: ")
+  WS_DEBUG_PRINTVAR(scanResp.addresses_found_count);
+  WS_DEBUG_PRINTLN(" Devices on bus.");
 
   scanResp.bus_response = wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_SUCCESS;
   return scanResp;
@@ -213,10 +222,11 @@ WipperSnapper_Component_I2C::scanAddresses() {
 bool WipperSnapper_Component_I2C::initI2CDevice(
     wippersnapper_i2c_v1_I2CDeviceInitRequest *msgDeviceInitReq) {
   WS_DEBUG_PRINT("Attempting to initialize I2C device: ");
-  WS_DEBUG_PRINTLN(msgDeviceInitReq->i2c_device_name);
+  WS_DEBUG_PRINTLNVAR(msgDeviceInitReq->i2c_device_name);
 
   uint16_t i2cAddress = (uint16_t)msgDeviceInitReq->i2c_device_address;
   if ((strcmp("aht20", msgDeviceInitReq->i2c_device_name) == 0) ||
+      (strcmp("aht21", msgDeviceInitReq->i2c_device_name) == 0) ||
       (strcmp("am2301b", msgDeviceInitReq->i2c_device_name) == 0) ||
       (strcmp("am2315c", msgDeviceInitReq->i2c_device_name) == 0) ||
       (strcmp("dht20", msgDeviceInitReq->i2c_device_name) == 0)) {
@@ -229,6 +239,38 @@ bool WipperSnapper_Component_I2C::initI2CDevice(
     }
     _ahtx0->configureDriver(msgDeviceInitReq);
     drivers.push_back(_ahtx0);
+  } else if (strcmp("apds9999", msgDeviceInitReq->i2c_device_name) == 0) {
+    _apds9999 = new WipperSnapper_I2C_Driver_APDS9999(this->_i2c, i2cAddress);
+    if (!_apds9999->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize APDS9999!");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _apds9999->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_apds9999);
+    WS_DEBUG_PRINTLN("APDS9999 Initialized Successfully!");
+  } else if (strcmp("as5600", msgDeviceInitReq->i2c_device_name) == 0) {
+    _as5600 = new WipperSnapper_I2C_Driver_AS5600(this->_i2c, i2cAddress);
+    if (!_as5600->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize AS5600 chip!");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _as5600->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_as5600);
+  } else if (strcmp("as7331", msgDeviceInitReq->i2c_device_name) == 0) {
+    _as7331 = new WipperSnapper_I2C_Driver_AS7331(this->_i2c, i2cAddress);
+    if (!_as7331->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize AS7331!");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _as7331->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_as7331);
+    WS_DEBUG_PRINTLN("AS7331 Initialized Successfully!");
   } else if (strcmp("bh1750", msgDeviceInitReq->i2c_device_name) == 0) {
     _bh1750 = new WipperSnapper_I2C_Driver_BH1750(this->_i2c, i2cAddress);
     if (!_bh1750->begin()) {
@@ -265,14 +307,27 @@ bool WipperSnapper_Component_I2C::initI2CDevice(
              (strcmp("bmp390", msgDeviceInitReq->i2c_device_name) == 0)) {
     _bmp3xx = new WipperSnapper_I2C_Driver_BMP3XX(this->_i2c, i2cAddress);
     if (!_bmp3xx->begin()) {
-      WS_DEBUG_PRINTLN("ERROR: Failed to initialize BMP388!");
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize BMP3xx!");
       _busStatusResponse =
           wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
       return false;
     }
     _bmp3xx->configureDriver(msgDeviceInitReq);
     drivers.push_back(_bmp3xx);
-    WS_DEBUG_PRINTLN("BMP388 Initialized Successfully!");
+    WS_DEBUG_PRINTLN("BMP3xx Initialized Successfully!");
+  } else if ((strcmp("bmp580", msgDeviceInitReq->i2c_device_name) == 0) ||
+             (strcmp("bmp581", msgDeviceInitReq->i2c_device_name) == 0) ||
+             (strcmp("bmp585", msgDeviceInitReq->i2c_device_name) == 0)) {
+    _bmp5xx = new WipperSnapper_I2C_Driver_BMP5XX(this->_i2c, i2cAddress);
+    if (!_bmp5xx->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize BMP5xx!");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _bmp5xx->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_bmp5xx);
+    WS_DEBUG_PRINTLN("BMP5xx Initialized Successfully!");
   } else if ((strcmp("bme680", msgDeviceInitReq->i2c_device_name) == 0) ||
              (strcmp("bme688", msgDeviceInitReq->i2c_device_name) == 0)) {
     _bme680 = new WipperSnapper_I2C_Driver_BME680(this->_i2c, i2cAddress);
@@ -285,6 +340,17 @@ bool WipperSnapper_Component_I2C::initI2CDevice(
     _bme680->configureDriver(msgDeviceInitReq);
     drivers.push_back(_bme680);
     WS_DEBUG_PRINTLN("BME680 Initialized Successfully!");
+  } else if (strcmp("d6t1a", msgDeviceInitReq->i2c_device_name) == 0) {
+    _d6t1a = new WipperSnapper_I2C_Driver_D6T1A(this->_i2c, i2cAddress);
+    if (!_d6t1a->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize D6T1A");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _d6t1a->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_d6t1a);
+    WS_DEBUG_PRINTLN("D6T1A Initialized Successfully!");
   } else if (strcmp("dps310", msgDeviceInitReq->i2c_device_name) == 0) {
     _dps310 = new WipperSnapper_I2C_Driver_DPS310(this->_i2c, i2cAddress);
     if (!_dps310->begin()) {
@@ -296,17 +362,40 @@ bool WipperSnapper_Component_I2C::initI2CDevice(
     _dps310->configureDriver(msgDeviceInitReq);
     drivers.push_back(_dps310);
     WS_DEBUG_PRINTLN("DPS310 Initialized Successfully!");
-  } else if (strcmp("ens160", msgDeviceInitReq->i2c_device_name) == 0) {
-    _ens160 = new WipperSnapper_I2C_Driver_ENS160(this->_i2c, i2cAddress);
-    if (!_ens160->begin()) {
-      WS_DEBUG_PRINTLN("ERROR: Failed to initialize ENS160!");
+  } else if (strcmp("ds2484", msgDeviceInitReq->i2c_device_name) == 0) {
+    _ds2484 = new WipperSnapper_I2C_Driver_DS2484(this->_i2c, i2cAddress);
+    if (!_ds2484->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize DS2484!");
       _busStatusResponse =
           wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
       return false;
     }
-    _ens160->configureDriver(msgDeviceInitReq);
-    drivers.push_back(_ens160);
-    WS_DEBUG_PRINTLN("ENS160 Initialized Successfully!");
+    _ds2484->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_ds2484);
+    WS_DEBUG_PRINTLN("DS2484 Initialized Successfully!");
+  } else if ((strcmp("ens160", msgDeviceInitReq->i2c_device_name) == 0) ||
+             (strcmp("ens161", msgDeviceInitReq->i2c_device_name) == 0)) {
+    _ens16x = new WipperSnapper_I2C_Driver_ENS16x(this->_i2c, i2cAddress);
+    if (!_ens16x->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize ENS16x!");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _ens16x->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_ens16x);
+    WS_DEBUG_PRINTLN("ENS16x Initialized Successfully!");
+  } else if (strcmp("hdc302x", msgDeviceInitReq->i2c_device_name) == 0) {
+    _hdc302x = new WipperSnapper_I2C_Driver_HDC302X(this->_i2c, i2cAddress);
+    if (!_hdc302x->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize HDC302X!");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _hdc302x->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_hdc302x);
+    WS_DEBUG_PRINTLN("HDC302X Initialized Successfully!");
   } else if (strcmp("hts221", msgDeviceInitReq->i2c_device_name) == 0) {
     _hts221 = new WipperSnapper_I2C_Driver_HTS221(this->_i2c, i2cAddress);
     if (!_hts221->begin()) {
@@ -351,6 +440,39 @@ bool WipperSnapper_Component_I2C::initI2CDevice(
     _scd30->configureDriver(msgDeviceInitReq);
     drivers.push_back(_scd30);
     WS_DEBUG_PRINTLN("SCD30 Initialized Successfully!");
+  } else if (strcmp("ina237", msgDeviceInitReq->i2c_device_name) == 0) {
+    _ina237 = new WipperSnapper_I2C_Driver_INA237(this->_i2c, i2cAddress);
+    if (!_ina237->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize INA237");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _ina237->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_ina237);
+    WS_DEBUG_PRINTLN("INA237 Initialized Successfully!");
+  } else if (strcmp("ina238", msgDeviceInitReq->i2c_device_name) == 0) {
+    _ina238 = new WipperSnapper_I2C_Driver_INA238(this->_i2c, i2cAddress);
+    if (!_ina238->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize INA238");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _ina238->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_ina238);
+    WS_DEBUG_PRINTLN("INA238 Initialized Successfully!");
+  } else if (strcmp("ina228", msgDeviceInitReq->i2c_device_name) == 0) {
+    _ina228 = new WipperSnapper_I2C_Driver_INA228(this->_i2c, i2cAddress);
+    if (!_ina228->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize INA228");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _ina228->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_ina228);
+    WS_DEBUG_PRINTLN("INA228 Initialized Successfully!");
   } else if (strcmp("ina219", msgDeviceInitReq->i2c_device_name) == 0) {
     _ina219 = new WipperSnapper_I2C_Driver_INA219(this->_i2c, i2cAddress);
     if (!_ina219->begin()) {
@@ -362,6 +484,17 @@ bool WipperSnapper_Component_I2C::initI2CDevice(
     _ina219->configureDriver(msgDeviceInitReq);
     drivers.push_back(_ina219);
     WS_DEBUG_PRINTLN("INA219 Initialized Successfully!");
+  } else if (strcmp("ina260", msgDeviceInitReq->i2c_device_name) == 0) {
+    _ina260 = new WipperSnapper_I2C_Driver_INA260(this->_i2c, i2cAddress);
+    if (!_ina260->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize INA260");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _ina260->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_ina260);
+    WS_DEBUG_PRINTLN("INA260 Initialized Successfully!");
   } else if (strcmp("ltr390", msgDeviceInitReq->i2c_device_name) == 0) {
     _ltr390 = new WipperSnapper_I2C_Driver_LTR390(this->_i2c, i2cAddress);
     if (!_ltr390->begin()) {
@@ -386,6 +519,17 @@ bool WipperSnapper_Component_I2C::initI2CDevice(
     _ltr329->configureDriver(msgDeviceInitReq);
     drivers.push_back(_ltr329);
     WS_DEBUG_PRINTLN("LTR329/303 Initialized Successfully!");
+  } else if (strcmp("nau7802", msgDeviceInitReq->i2c_device_name) == 0) {
+    _nau7802 = new WipperSnapper_I2C_Driver_NAU7802(this->_i2c, i2cAddress);
+    if (!_nau7802->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize NAU7802");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _nau7802->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_nau7802);
+    WS_DEBUG_PRINTLN("NAU7802 Initialized Successfully!");
   } else if (strcmp("sgp30", msgDeviceInitReq->i2c_device_name) == 0) {
     _sgp30 = new WipperSnapper_I2C_Driver_SGP30(this->_i2c, i2cAddress);
     if (!_sgp30->begin()) {
@@ -408,6 +552,17 @@ bool WipperSnapper_Component_I2C::initI2CDevice(
     _sgp40->configureDriver(msgDeviceInitReq);
     drivers.push_back(_sgp40);
     WS_DEBUG_PRINTLN("SGP40 Initialized Successfully!");
+  } else if (strcmp("sgp41", msgDeviceInitReq->i2c_device_name) == 0) {
+    _sgp41 = new WipperSnapper_I2C_Driver_SGP41(this->_i2c, i2cAddress);
+    if (!_sgp41->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize SGP41!");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _sgp41->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_sgp41);
+    WS_DEBUG_PRINTLN("SGP41 Initialized Successfully!");
   } else if ((strcmp("sht20", msgDeviceInitReq->i2c_device_name) == 0) ||
              (strcmp("si7021", msgDeviceInitReq->i2c_device_name) == 0)) {
     _si7021 = new WipperSnapper_I2C_Driver_SI7021(this->_i2c, i2cAddress);
@@ -420,6 +575,28 @@ bool WipperSnapper_Component_I2C::initI2CDevice(
     _si7021->configureDriver(msgDeviceInitReq);
     drivers.push_back(_si7021);
     WS_DEBUG_PRINTLN("SI7021/SHT20 Initialized Successfully!");
+  } else if (strcmp("spa06_003", msgDeviceInitReq->i2c_device_name) == 0) {
+    _spa06_003 = new WipperSnapper_I2C_Driver_SPA06_003(this->_i2c, i2cAddress);
+    if (!_spa06_003->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize SPA06-003!");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _spa06_003->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_spa06_003);
+    WS_DEBUG_PRINTLN("SPA06-003 Initialized Successfully!");
+  } else if (strcmp("mcp3421", msgDeviceInitReq->i2c_device_name) == 0) {
+    _mcp3421 = new WipperSnapper_I2C_Driver_MCP3421(this->_i2c, i2cAddress);
+    if (!_mcp3421->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize MCP3421!");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _mcp3421->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_mcp3421);
+    WS_DEBUG_PRINTLN("MCP3421 Initialized Successfully!");
   } else if (strcmp("mcp9601", msgDeviceInitReq->i2c_device_name) == 0) {
     _mcp9601 = new WipperSnapper_I2C_Driver_MCP9601(this->_i2c, i2cAddress);
     if (!_mcp9601->begin()) {
@@ -443,6 +620,33 @@ bool WipperSnapper_Component_I2C::initI2CDevice(
     _mcp9808->configureDriver(msgDeviceInitReq);
     drivers.push_back(_mcp9808);
     WS_DEBUG_PRINTLN("MCP9808 Initialized Successfully!");
+  } else if (strcmp("mlx90632b", msgDeviceInitReq->i2c_device_name) == 0 ||
+             strcmp("mlx90632d_med", msgDeviceInitReq->i2c_device_name) == 0) {
+    _mlx90632d = new WipperSnapper_I2C_Driver_MLX90632D(this->_i2c, i2cAddress);
+    if (!_mlx90632d->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize MLX90632!");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _mlx90632d->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_mlx90632d);
+    WS_DEBUG_PRINTLN("MLX90632 Initialized Successfully!");
+  } else if (strcmp("mlx90632d_ext", msgDeviceInitReq->i2c_device_name) == 0) {
+    _mlx90632d_ext =
+        new WipperSnapper_I2C_Driver_MLX90632D(this->_i2c, i2cAddress);
+    // set extended range
+    if (!_mlx90632d_ext->begin() ||
+        !_mlx90632d_ext->ConfigureAndPrintSensorInfo(true)) {
+      WS_DEBUG_PRINTLN(
+          "ERROR: Failed to initialize MLX90632D with extended range!");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _mlx90632d_ext->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_mlx90632d_ext);
+    WS_DEBUG_PRINTLN("MLX90632D_EXT Initialized Successfully!");
   } else if (strcmp("mpl115a2", msgDeviceInitReq->i2c_device_name) == 0) {
     _mpl115a2 = new WipperSnapper_I2C_Driver_MPL115A2(this->_i2c, i2cAddress);
     if (!_mpl115a2->begin()) {
@@ -487,6 +691,17 @@ bool WipperSnapper_Component_I2C::initI2CDevice(
     _tmp117->configureDriver(msgDeviceInitReq);
     drivers.push_back(_tmp117);
     WS_DEBUG_PRINTLN("TMP117 Initialized Successfully!");
+  } else if (strcmp("tmp119", msgDeviceInitReq->i2c_device_name) == 0) {
+    _tmp119 = new WipperSnapper_I2C_Driver_TMP119(this->_i2c, i2cAddress);
+    if (!_tmp119->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize TMP119!");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _tmp119->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_tmp119);
+    WS_DEBUG_PRINTLN("TMP119 Initialized Successfully!");
   } else if (strcmp("tsl2591", msgDeviceInitReq->i2c_device_name) == 0) {
     _tsl2591 = new WipperSnapper_I2C_Driver_TSL2591(this->_i2c, i2cAddress);
     if (!_tsl2591->begin()) {
@@ -509,6 +724,17 @@ bool WipperSnapper_Component_I2C::initI2CDevice(
     _vcnl4020->configureDriver(msgDeviceInitReq);
     drivers.push_back(_vcnl4020);
     WS_DEBUG_PRINTLN("VCNL4020 Initialized Successfully!");
+  } else if (strcmp("vcnl4030", msgDeviceInitReq->i2c_device_name) == 0) {
+    _vcnl4030 = new WipperSnapper_I2C_Driver_VCNL4030(this->_i2c, i2cAddress);
+    if (!_vcnl4030->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize VCNL4030!");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _vcnl4030->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_vcnl4030);
+    WS_DEBUG_PRINTLN("VCNL4030 Initialized Successfully!");
   } else if (strcmp("vcnl4040", msgDeviceInitReq->i2c_device_name) == 0) {
     _vcnl4040 = new WipperSnapper_I2C_Driver_VCNL4040(this->_i2c, i2cAddress);
     if (!_vcnl4040->begin()) {
@@ -520,6 +746,17 @@ bool WipperSnapper_Component_I2C::initI2CDevice(
     _vcnl4040->configureDriver(msgDeviceInitReq);
     drivers.push_back(_vcnl4040);
     WS_DEBUG_PRINTLN("VCNL4040 Initialized Successfully!");
+  } else if (strcmp("vcnl4200", msgDeviceInitReq->i2c_device_name) == 0) {
+    _vcnl4200 = new WipperSnapper_I2C_Driver_VCNL4200(this->_i2c, i2cAddress);
+    if (!_vcnl4200->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize VCNL4200!");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _vcnl4200->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_vcnl4200);
+    WS_DEBUG_PRINTLN("VCNL4200 Initialized Successfully!");
   } else if (strcmp("veml7700", msgDeviceInitReq->i2c_device_name) == 0) {
     _veml7700 = new WipperSnapper_I2C_Driver_VEML7700(this->_i2c, i2cAddress);
     if (!_veml7700->begin()) {
@@ -531,7 +768,9 @@ bool WipperSnapper_Component_I2C::initI2CDevice(
     _veml7700->configureDriver(msgDeviceInitReq);
     drivers.push_back(_veml7700);
     WS_DEBUG_PRINTLN("VEML7700 Initialized Successfully!");
-  } else if (strcmp("scd40", msgDeviceInitReq->i2c_device_name) == 0) {
+  } else if ((strcmp("scd40", msgDeviceInitReq->i2c_device_name) == 0) ||
+             (strcmp("scd41", msgDeviceInitReq->i2c_device_name) == 0) ||
+             (strcmp("scd43", msgDeviceInitReq->i2c_device_name) == 0)) {
     _scd40 = new WipperSnapper_I2C_Driver_SCD4X(this->_i2c, i2cAddress);
     if (!_scd40->begin()) {
       WS_DEBUG_PRINTLN("ERROR: Failed to initialize SCD4x!");
@@ -542,7 +781,10 @@ bool WipperSnapper_Component_I2C::initI2CDevice(
     _scd40->configureDriver(msgDeviceInitReq);
     drivers.push_back(_scd40);
     WS_DEBUG_PRINTLN("SCD4x Initialized Successfully!");
-  } else if (strcmp("sen5x", msgDeviceInitReq->i2c_device_name) == 0) {
+  } else if ((strcmp("sen5x", msgDeviceInitReq->i2c_device_name) == 0) ||
+             (strcmp("sen55", msgDeviceInitReq->i2c_device_name) == 0) ||
+             (strcmp("sen54", msgDeviceInitReq->i2c_device_name) == 0) ||
+             (strcmp("sen50", msgDeviceInitReq->i2c_device_name) == 0)) {
     _sen5x = new WipperSnapper_I2C_Driver_SEN5X(this->_i2c, i2cAddress);
     if (!_sen5x->begin()) {
       WS_DEBUG_PRINTLN("ERROR: Failed to initialize SEN5X!");
@@ -553,6 +795,22 @@ bool WipperSnapper_Component_I2C::initI2CDevice(
     _sen5x->configureDriver(msgDeviceInitReq);
     drivers.push_back(_sen5x);
     WS_DEBUG_PRINTLN("SEN5X Initialized Successfully!");
+  } else if ((strcmp("sen6x", msgDeviceInitReq->i2c_device_name) == 0) ||
+             (strcmp("sen60", msgDeviceInitReq->i2c_device_name) == 0) ||
+             (strcmp("sen63C", msgDeviceInitReq->i2c_device_name) == 0) ||
+             (strcmp("sen65", msgDeviceInitReq->i2c_device_name) == 0) ||
+             (strcmp("sen66", msgDeviceInitReq->i2c_device_name) == 0) ||
+             (strcmp("sen68", msgDeviceInitReq->i2c_device_name) == 0)) {
+    _sen6x = new WipperSnapper_I2C_Driver_SEN6X(this->_i2c, i2cAddress);
+    if (!_sen6x->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize SEN6X!");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _sen6x->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_sen6x);
+    WS_DEBUG_PRINTLN("SEN6X Initialized Successfully!");
   } else if ((strcmp("sht40", msgDeviceInitReq->i2c_device_name) == 0) ||
              (strcmp("sht41", msgDeviceInitReq->i2c_device_name) == 0) ||
              (strcmp("sht45", msgDeviceInitReq->i2c_device_name) == 0)) {
@@ -613,6 +871,17 @@ bool WipperSnapper_Component_I2C::initI2CDevice(
     _pm25->configureDriver(msgDeviceInitReq);
     drivers.push_back(_pm25);
     WS_DEBUG_PRINTLN("PM2.5 AQI Sensor Initialized Successfully!");
+  } else if (strcmp("qmc5883p", msgDeviceInitReq->i2c_device_name) == 0) {
+    _qmc5883p = new WipperSnapper_I2C_Driver_QMC5883P(this->_i2c, i2cAddress);
+    if (!_qmc5883p->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize QMC5883P Sensor!");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _qmc5883p->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_qmc5883p);
+    WS_DEBUG_PRINTLN("QMC5883P Sensor Initialized Successfully!");
   } else if (strcmp("lc709203f", msgDeviceInitReq->i2c_device_name) == 0) {
     _lc = new WipperSnapper_I2C_Driver_LC709203F(this->_i2c, i2cAddress);
     if (!_lc->begin()) {
@@ -646,6 +915,17 @@ bool WipperSnapper_Component_I2C::initI2CDevice(
     _lps25hb->configureDriver(msgDeviceInitReq);
     drivers.push_back(_lps25hb);
     WS_DEBUG_PRINTLN("LPS25HB Sensor Initialized Successfully!");
+  } else if (strcmp("lps28dfw", msgDeviceInitReq->i2c_device_name) == 0) {
+    _lps28hb = new WipperSnapper_I2C_Driver_LPS28DFW(this->_i2c, i2cAddress);
+    if (!_lps28hb->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize LPS28DFW Sensor!");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _lps28hb->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_lps28hb);
+    WS_DEBUG_PRINTLN("LPS28HB Sensor Initialized Successfully!");
   } else if ((strcmp("lps33hw", msgDeviceInitReq->i2c_device_name) == 0) ||
              (strcmp("lps35hw", msgDeviceInitReq->i2c_device_name)) == 0) {
     _lps3xhw = new WipperSnapper_I2C_Driver_LPS3XHW(this->_i2c, i2cAddress);
@@ -658,6 +938,17 @@ bool WipperSnapper_Component_I2C::initI2CDevice(
     _lps3xhw->configureDriver(msgDeviceInitReq);
     drivers.push_back(_lps3xhw);
     WS_DEBUG_PRINTLN("LPS3XHW Sensor Initialized Successfully!");
+  } else if (strcmp("stcc4", msgDeviceInitReq->i2c_device_name) == 0) {
+    _stcc4 = new WipperSnapper_I2C_Driver_STCC4(this->_i2c, i2cAddress);
+    if (!_stcc4->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize STCC4!");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _stcc4->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_stcc4);
+    WS_DEBUG_PRINTLN("STCC4 Initialized Successfully!");
   } else if (strcmp("stemma_soil", msgDeviceInitReq->i2c_device_name) == 0) {
     _ss =
         new WipperSnapper_I2C_Driver_STEMMA_Soil_Sensor(this->_i2c, i2cAddress);
@@ -692,6 +983,28 @@ bool WipperSnapper_Component_I2C::initI2CDevice(
     _vl53l1x->configureDriver(msgDeviceInitReq);
     drivers.push_back(_vl53l1x);
     WS_DEBUG_PRINTLN("VL53L1X Initialized Successfully!");
+  } else if (strcmp("vl53l4cd", msgDeviceInitReq->i2c_device_name) == 0) {
+    _vl53l4cd = new WipperSnapper_I2C_Driver_VL53L4CD(this->_i2c, i2cAddress);
+    if (!_vl53l4cd->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize VL53L4CD!");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _vl53l4cd->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_vl53l4cd);
+    WS_DEBUG_PRINTLN("VL53L4CD Initialized Successfully!");
+  } else if (strcmp("vl53l4cx", msgDeviceInitReq->i2c_device_name) == 0) {
+    _vl53l4cx = new WipperSnapper_I2C_Driver_VL53L4CX(this->_i2c, i2cAddress);
+    if (!_vl53l4cx->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize VL53L4CX!");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _vl53l4cx->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_vl53l4cx);
+    WS_DEBUG_PRINTLN("VL53L4CX Initialized Successfully!");
   } else if (strcmp("vl6180x", msgDeviceInitReq->i2c_device_name) == 0) {
     _vl6180x = new WipperSnapper_I2C_Driver_VL6180X(this->_i2c, i2cAddress);
     if (!_vl6180x->begin()) {
@@ -714,6 +1027,17 @@ bool WipperSnapper_Component_I2C::initI2CDevice(
     _max17048->configureDriver(msgDeviceInitReq);
     drivers.push_back(_max17048);
     WS_DEBUG_PRINTLN("MAX17048/MAX17049 Initialized Successfully!");
+  } else if (strcmp("max44009", msgDeviceInitReq->i2c_device_name) == 0) {
+    _max44009 = new WipperSnapper_I2C_Driver_MAX44009(this->_i2c, i2cAddress);
+    if (!_max44009->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize MAX44009!");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _max44009->configureDriver(msgDeviceInitReq);
+    drivers.push_back(_max44009);
+    WS_DEBUG_PRINTLN("MAX44009 Initialized Successfully!");
   } else if (strcmp("adt7410", msgDeviceInitReq->i2c_device_name) == 0) {
     _adt7410 = new WipperSnapper_I2C_Driver_ADT7410(this->_i2c, i2cAddress);
     if (!_adt7410->begin()) {
@@ -725,8 +1049,107 @@ bool WipperSnapper_Component_I2C::initI2CDevice(
     _adt7410->configureDriver(msgDeviceInitReq);
     drivers.push_back(_adt7410);
     WS_DEBUG_PRINTLN("ADT7410 Initialized Successfully!");
+  } else if (strcmp("quadalphanum", msgDeviceInitReq->i2c_device_name) == 0) {
+    _quadAlphaNum =
+        new WipperSnapper_I2C_Driver_Out_QuadAlphaNum(this->_i2c, i2cAddress);
+    _quadAlphaNum->ConfigureI2CBackpack(
+        msgDeviceInitReq->i2c_output_add.config.led_backpack_config.brightness,
+        msgDeviceInitReq->i2c_output_add.config.led_backpack_config.alignment);
+    if (!_quadAlphaNum->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize Quad Alphanum. Display!");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _drivers_out.push_back(_quadAlphaNum);
+    WS_DEBUG_PRINTLN("Quad Alphanum. Display Initialized Successfully!");
+  } else if (strcmp("chardisplay16x2", msgDeviceInitReq->i2c_device_name) ==
+                 0 ||
+             strcmp("chardisplay20x4", msgDeviceInitReq->i2c_device_name) ==
+                 0) {
+    _charLcd = new WipperSnapper_I2C_Driver_Out_CharLcd(this->_i2c, i2cAddress);
+    _charLcd->ConfigureCharLcd(
+        msgDeviceInitReq->i2c_output_add.config.char_lcd_config.rows,
+        msgDeviceInitReq->i2c_output_add.config.char_lcd_config.columns);
+    if (!_charLcd->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize Character LCD!");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _drivers_out.push_back(_charLcd);
+    WS_DEBUG_PRINTLN("Char LCD Display Initialized Successfully!");
+  } else if (strcmp("7seg", msgDeviceInitReq->i2c_device_name) == 0) {
+    _sevenSeg = new WipperSnapper_I2C_Driver_Out_7Seg(this->_i2c, i2cAddress);
+    _sevenSeg->ConfigureI2CBackpack(
+        msgDeviceInitReq->i2c_output_add.config.led_backpack_config.brightness,
+        msgDeviceInitReq->i2c_output_add.config.led_backpack_config.alignment);
+    if (!_sevenSeg->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize 7-Segement LED Matrix!");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    _drivers_out.push_back(_sevenSeg);
+    WS_DEBUG_PRINTLN("7-Segement LED Matrix Initialized Successfully!");
+  } else if (strcmp("fthrwingoled128x64", msgDeviceInitReq->i2c_device_name) ==
+                 0 ||
+             strcmp("fthrwingoled128x64lg",
+                    msgDeviceInitReq->i2c_device_name) == 0) {
+    WS_DEBUG_PRINTLN("SH1107 display detected!");
+    _sh1107 = new WipperSnapper_I2C_Driver_Out_SH1107(this->_i2c, i2cAddress);
+    WS_DEBUG_PRINTLN("Configuring SH1107 display...");
+    _sh1107->ConfigureSH1107(
+        (uint8_t)msgDeviceInitReq->i2c_output_add.config.ssd1306_config.width,
+        (uint8_t)msgDeviceInitReq->i2c_output_add.config.ssd1306_config.height,
+        (uint8_t)
+            msgDeviceInitReq->i2c_output_add.config.ssd1306_config.text_size,
+        OLED_128X64_WING_ROTATION_90); // fixed as currently the only screen is
+    // 128x64wing (needs a rotation of 1 / 90degrees and constructor w/h swap).
+    if (!_sh1107->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize sh1107!");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    WS_DEBUG_PRINTLN("SH1107 display configured successfully!");
+    _drivers_out.push_back(_sh1107);
+    WS_DEBUG_PRINTLN("SH1107 display initialized Successfully!");
+  } else if (strcmp("oled32x64large", msgDeviceInitReq->i2c_device_name) == 0 ||
+             strcmp("oled64x32default", msgDeviceInitReq->i2c_device_name) ==
+                 0 ||
+             strcmp("oled64x32large", msgDeviceInitReq->i2c_device_name) == 0 ||
+             strcmp("fthrwingoled128x32", msgDeviceInitReq->i2c_device_name) ==
+                 0 ||
+             strcmp("fthrwingoled128x32lg",
+                    msgDeviceInitReq->i2c_device_name) == 0 ||
+             strcmp("oled128x32default", msgDeviceInitReq->i2c_device_name) ==
+                 0 ||
+             strcmp("oled128x32large", msgDeviceInitReq->i2c_device_name) ==
+                 0 ||
+             strcmp("oled128x64default", msgDeviceInitReq->i2c_device_name) ==
+                 0 ||
+             strcmp("oled128x64large", msgDeviceInitReq->i2c_device_name) ==
+                 0) {
+    WS_DEBUG_PRINTLN("SSD1306 display detected!");
+    _ssd1306 = new WipperSnapper_I2C_Driver_Out_Ssd1306(this->_i2c, i2cAddress);
+    WS_DEBUG_PRINTLN("Configuring SSD1306 display...");
+    _ssd1306->ConfigureSSD1306(
+        (uint8_t)msgDeviceInitReq->i2c_output_add.config.ssd1306_config.width,
+        (uint8_t)msgDeviceInitReq->i2c_output_add.config.ssd1306_config.height,
+        (uint8_t)
+            msgDeviceInitReq->i2c_output_add.config.ssd1306_config.text_size);
+    if (!_ssd1306->begin()) {
+      WS_DEBUG_PRINTLN("ERROR: Failed to initialize ssd1306!");
+      _busStatusResponse =
+          wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_DEVICE_INIT_FAIL;
+      return false;
+    }
+    WS_DEBUG_PRINTLN("SSD1306 display configured successfully!");
+    _drivers_out.push_back(_ssd1306);
+    WS_DEBUG_PRINTLN("SSD1306 display initialized Successfully!");
   } else {
-    WS_DEBUG_PRINTLN("ERROR: I2C device type not found!")
+    WS_DEBUG_PRINTLN("ERROR: I2C device type not found!");
     _busStatusResponse =
         wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_UNSUPPORTED_SENSOR;
     return false;
@@ -761,6 +1184,7 @@ void WipperSnapper_Component_I2C::updateI2CDeviceProperties(
 
   // set response OK
   _busStatusResponse = wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_SUCCESS;
+  WS.runNetFSM();
 }
 
 /*******************************************************************************/
@@ -773,8 +1197,9 @@ void WipperSnapper_Component_I2C::updateI2CDeviceProperties(
 void WipperSnapper_Component_I2C::deinitI2CDevice(
     wippersnapper_i2c_v1_I2CDeviceDeinitRequest *msgDeviceDeinitReq) {
   uint16_t deviceAddr = (uint16_t)msgDeviceDeinitReq->i2c_device_address;
-  std::vector<WipperSnapper_I2C_Driver *>::iterator iter, end;
 
+  // Check input (sensor) drivers
+  std::vector<WipperSnapper_I2C_Driver *>::iterator iter, end;
   for (iter = drivers.begin(), end = drivers.end(); iter != end; ++iter) {
     if ((*iter)->getI2CAddress() == deviceAddr) {
       // Delete the object that iter points to
@@ -792,6 +1217,28 @@ void WipperSnapper_Component_I2C::deinitI2CDevice(
       WS_DEBUG_PRINTLN("I2C Device De-initialized!");
     }
   }
+
+  // Check for output drivers
+  std::vector<WipperSnapper_I2C_Driver_Out *>::iterator out_iter, out_end;
+  for (out_iter = _drivers_out.begin(), out_end = _drivers_out.end();
+       out_iter != out_end; ++out_iter) {
+    if ((*out_iter)->getI2CAddress() == deviceAddr) {
+      // Set the driver to nullptr
+      *out_iter = nullptr;
+// ESP-IDF, Erase–remove iter ptr from driver vector
+#if defined(ARDUINO_ARCH_ESP32) || defined(ARDUINO_ARCH_ESP8266)
+      *out_iter = nullptr;
+      _drivers_out.erase(
+          remove(_drivers_out.begin(), _drivers_out.end(), nullptr),
+          _drivers_out.end());
+#else
+      // Arduino can not erase-remove, erase only
+      _drivers_out.erase(out_iter);
+#endif
+      WS_DEBUG_PRINTLN("I2C Device De-initialized!");
+    }
+  }
+
   _busStatusResponse = wippersnapper_i2c_v1_BusResponse_BUS_RESPONSE_SUCCESS;
 }
 
@@ -813,8 +1260,8 @@ bool WipperSnapper_Component_I2C::encodePublishI2CDeviceEventMsg(
   memset(WS._buffer_outgoing, 0, sizeof(WS._buffer_outgoing));
   pb_ostream_t ostream =
       pb_ostream_from_buffer(WS._buffer_outgoing, sizeof(WS._buffer_outgoing));
-  if (!pb_encode(&ostream, wippersnapper_signal_v1_I2CResponse_fields,
-                 msgi2cResponse)) {
+  if (!ws_pb_encode(&ostream, wippersnapper_signal_v1_I2CResponse_fields,
+                    msgi2cResponse)) {
     WS_DEBUG_PRINTLN(
         "ERROR: Unable to encode I2C device event response message!");
     return false;
@@ -827,6 +1274,7 @@ bool WipperSnapper_Component_I2C::encodePublishI2CDeviceEventMsg(
   WS_DEBUG_PRINT("PUBLISHING -> I2C Device Sensor Event Message...");
   if (!WS._mqtt->publish(WS._topic_signal_i2c_device, WS._buffer_outgoing,
                          msgSz, 1)) {
+    WS_DEBUG_PRINTLN("ERROR: MQTT Publish failed!");
     return false;
   };
   WS_DEBUG_PRINTLN("PUBLISHED!");
@@ -906,6 +1354,7 @@ void WipperSnapper_Component_I2C::displayDeviceEventMessage(
                (unsigned int)sensorAddress, value);
       break;
     case wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_LIGHT:
+    case wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_LUX:
       snprintf(buffer, 100, "[I2C: %x] Read: %0.3f lux\n",
                (unsigned int)sensorAddress, value);
       break;
@@ -953,10 +1402,52 @@ void WipperSnapper_Component_I2C::displayDeviceEventMessage(
     default:
       break;
     }
-#ifdef USE_DISPLAY
-    WS._ui_helper->add_text_to_terminal(buffer);
-#endif
   }
+}
+
+/*******************************************************************************/
+/*!
+    @brief    Handles an I2CDeviceOutputWrite message.
+    @param    msgDeviceWrite
+              A decoded I2CDeviceOutputWrite message.
+    @returns  True if the message was handled successfully, false otherwise.
+*/
+/*******************************************************************************/
+bool WipperSnapper_Component_I2C::Handle_I2cDeviceOutputWrite(
+    wippersnapper_i2c_v1_I2CDeviceOutputWrite *msgDeviceWrite) {
+
+  // Create a ptr to the base driver out
+  WipperSnapper_I2C_Driver_Out *driver_out = nullptr;
+  // Find the matching driver by address in the _drivers_out vector
+  for (size_t i = 0; i < _drivers_out.size(); i++) {
+    if (_drivers_out[i]->getI2CAddress() ==
+        msgDeviceWrite->i2c_device_address) {
+      driver_out = _drivers_out[i];
+      break;
+    }
+  }
+  if (driver_out == nullptr) {
+    WS_DEBUG_PRINTLN("ERROR: I2c output driver not found within drivers_out!");
+    return false;
+  }
+
+  // Call the output_msg
+  if (msgDeviceWrite->which_output_msg ==
+      wippersnapper_i2c_v1_I2CDeviceOutputWrite_write_led_backpack_tag) {
+    driver_out->WriteLedBackpack(
+        &msgDeviceWrite->output_msg.write_led_backpack);
+  } else if (msgDeviceWrite->which_output_msg ==
+             wippersnapper_i2c_v1_I2CDeviceOutputWrite_write_char_lcd_tag) {
+    driver_out->WriteMessageCharLCD(&msgDeviceWrite->output_msg.write_char_lcd);
+  } else if (msgDeviceWrite->which_output_msg ==
+             wippersnapper_i2c_v1_I2CDeviceOutputWrite_write_ssd1306_tag) {
+    driver_out->WriteMessageSSD1306(
+        msgDeviceWrite->output_msg.write_ssd1306.message);
+  } else {
+    WS_DEBUG_PRINTLN("ERROR: Unknown i2c output message type!");
+    return false;
+  }
+  return true;
 }
 
 /*******************************************************************************/
@@ -966,7 +1457,6 @@ void WipperSnapper_Component_I2C::displayDeviceEventMessage(
 */
 /*******************************************************************************/
 void WipperSnapper_Component_I2C::update() {
-
   // Create response message
   wippersnapper_signal_v1_I2CResponse msgi2cResponse =
       wippersnapper_signal_v1_I2CResponse_init_zero;
@@ -974,524 +1464,356 @@ void WipperSnapper_Component_I2C::update() {
       wippersnapper_signal_v1_I2CResponse_resp_i2c_device_event_tag;
 
   long curTime;
-  std::vector<WipperSnapper_I2C_Driver *>::iterator iter, end;
-  for (iter = drivers.begin(), end = drivers.end(); iter != end; ++iter) {
-    // Number of events which occured for this driver
-    msgi2cResponse.payload.resp_i2c_device_event.sensor_event_count = 0;
+  bool sensorsReturningFalse = true;
+  int retries = 3;
 
-    // Event struct
-    sensors_event_t event;
-
-    // AMBIENT_TEMPERATURE sensor (°C)
+  while (sensorsReturningFalse && retries > 0) {
+    sensorsReturningFalse = false;
+    retries--;
     curTime = millis();
-    if ((*iter)->getSensorAmbientTempPeriod() != 0L &&
-        curTime - (*iter)->getSensorAmbientTempPeriodPrv() >
-            (*iter)->getSensorAmbientTempPeriod()) {
-      if ((*iter)->getEventAmbientTemp(&event)) {
-        WS_DEBUG_PRINT("Sensor 0x");
-        WS_DEBUG_PRINTHEX((*iter)->getI2CAddress());
-        WS_DEBUG_PRINTLN("");
-        WS_DEBUG_PRINT("\tTemperature: ");
-        WS_DEBUG_PRINT(event.temperature);
-        WS_DEBUG_PRINTLN(" degrees C");
 
-        // pack event data into msg
-        fillEventMessage(
-            &msgi2cResponse, event.temperature,
-            wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_AMBIENT_TEMPERATURE);
+    std::vector<WipperSnapper_I2C_Driver *>::iterator iter, end;
+    for (iter = drivers.begin(), end = drivers.end(); iter != end; ++iter) {
+      // Per-driver fast tick (non-blocking)
+      (*iter)->fastTick();
 
-        (*iter)->setSensorAmbientTempPeriodPrv(curTime);
-      } else {
-        WS_DEBUG_PRINTLN(
-            "ERROR: Failed to get ambient temperature sensor reading!");
+      // Number of events which occurred for this driver
+      msgi2cResponse.payload.resp_i2c_device_event.sensor_event_count = 0;
+
+      // Event struct - zero-initialise on each iteration
+      sensors_event_t event = {0};
+
+      // AMBIENT_TEMPERATURE sensor (°C)
+      sensorEventRead(
+          iter, curTime, &msgi2cResponse,
+          &WipperSnapper_I2C_Driver::getEventAmbientTemp,
+          &WipperSnapper_I2C_Driver::getSensorAmbientTempPeriod,
+          &WipperSnapper_I2C_Driver::getSensorAmbientTempPeriodPrv,
+          &WipperSnapper_I2C_Driver::setSensorAmbientTempPeriodPrv,
+          wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_AMBIENT_TEMPERATURE,
+          "Ambient Temperature", " degrees C", event,
+          &sensors_event_t::temperature, sensorsReturningFalse, retries);
+
+      // Ambient Temperature sensor (°F)
+      sensorEventRead(
+          iter, curTime, &msgi2cResponse,
+          &WipperSnapper_I2C_Driver::getEventAmbientTempF,
+          &WipperSnapper_I2C_Driver::getSensorAmbientTempFPeriod,
+          &WipperSnapper_I2C_Driver::getSensorAmbientTempFPeriodPrv,
+          &WipperSnapper_I2C_Driver::setSensorAmbientTempFPeriodPrv,
+          wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_AMBIENT_TEMPERATURE_FAHRENHEIT,
+          "Ambient Temperature", " degrees F", event,
+          &sensors_event_t::temperature, sensorsReturningFalse, retries);
+
+      // OBJECT_TEMPERATURE sensor (°C)
+      sensorEventRead(
+          iter, curTime, &msgi2cResponse,
+          &WipperSnapper_I2C_Driver::getEventObjectTemp,
+          &WipperSnapper_I2C_Driver::getSensorObjectTempPeriod,
+          &WipperSnapper_I2C_Driver::getSensorObjectTempPeriodPrv,
+          &WipperSnapper_I2C_Driver::setSensorObjectTempPeriodPrv,
+          wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_OBJECT_TEMPERATURE,
+          "Object Temperature", " degrees C", event,
+          &sensors_event_t::temperature, sensorsReturningFalse, retries);
+
+      // OBJECT_TEMPERATURE sensor (°F)
+      sensorEventRead(
+          iter, curTime, &msgi2cResponse,
+          &WipperSnapper_I2C_Driver::getEventObjectTempF,
+          &WipperSnapper_I2C_Driver::getSensorObjectTempFPeriod,
+          &WipperSnapper_I2C_Driver::getSensorObjectTempFPeriodPrv,
+          &WipperSnapper_I2C_Driver::setSensorObjectTempFPeriodPrv,
+          wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_OBJECT_TEMPERATURE_FAHRENHEIT,
+          "Object Temperature", " degrees F", event,
+          &sensors_event_t::temperature, sensorsReturningFalse, retries);
+
+      // RELATIVE_HUMIDITY sensor
+      sensorEventRead(
+          iter, curTime, &msgi2cResponse,
+          &WipperSnapper_I2C_Driver::getEventRelativeHumidity,
+          &WipperSnapper_I2C_Driver::getSensorRelativeHumidityPeriod,
+          &WipperSnapper_I2C_Driver::getSensorRelativeHumidityPeriodPrv,
+          &WipperSnapper_I2C_Driver::setSensorRelativeHumidityPeriodPrv,
+          wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_RELATIVE_HUMIDITY,
+          "Humidity", " %RH", event, &sensors_event_t::relative_humidity,
+          sensorsReturningFalse, retries);
+
+      // PRESSURE sensor
+      sensorEventRead(iter, curTime, &msgi2cResponse,
+                      &WipperSnapper_I2C_Driver::getEventPressure,
+                      &WipperSnapper_I2C_Driver::getSensorPressurePeriod,
+                      &WipperSnapper_I2C_Driver::getSensorPressurePeriodPrv,
+                      &WipperSnapper_I2C_Driver::setSensorPressurePeriodPrv,
+                      wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_PRESSURE,
+                      "Pressure", " hPa", event, &sensors_event_t::pressure,
+                      sensorsReturningFalse, retries);
+
+      // CO2 sensor
+      sensorEventRead(iter, curTime, &msgi2cResponse,
+                      &WipperSnapper_I2C_Driver::getEventCO2,
+                      &WipperSnapper_I2C_Driver::getSensorCO2Period,
+                      &WipperSnapper_I2C_Driver::getSensorCO2PeriodPrv,
+                      &WipperSnapper_I2C_Driver::setSensorCO2PeriodPrv,
+                      wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_CO2, "CO2",
+                      " ppm", event, &sensors_event_t::CO2,
+                      sensorsReturningFalse, retries);
+
+      // eCO2 sensor
+      sensorEventRead(iter, curTime, &msgi2cResponse,
+                      &WipperSnapper_I2C_Driver::getEventECO2,
+                      &WipperSnapper_I2C_Driver::getSensorECO2Period,
+                      &WipperSnapper_I2C_Driver::getSensorECO2PeriodPrv,
+                      &WipperSnapper_I2C_Driver::setSensorECO2PeriodPrv,
+                      wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_ECO2, "eCO2",
+                      " ppm", event, &sensors_event_t::eCO2,
+                      sensorsReturningFalse, retries);
+
+      // TVOC sensor
+      sensorEventRead(iter, curTime, &msgi2cResponse,
+                      &WipperSnapper_I2C_Driver::getEventTVOC,
+                      &WipperSnapper_I2C_Driver::getSensorTVOCPeriod,
+                      &WipperSnapper_I2C_Driver::getSensorTVOCPeriodPrv,
+                      &WipperSnapper_I2C_Driver::setSensorTVOCPeriodPrv,
+                      wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_TVOC, "TVOC",
+                      " ppb", event, &sensors_event_t::tvoc,
+                      sensorsReturningFalse, retries);
+
+      // Altitude sensor
+      sensorEventRead(iter, curTime, &msgi2cResponse,
+                      &WipperSnapper_I2C_Driver::getEventAltitude,
+                      &WipperSnapper_I2C_Driver::getSensorAltitudePeriod,
+                      &WipperSnapper_I2C_Driver::getSensorAltitudePeriodPrv,
+                      &WipperSnapper_I2C_Driver::setSensorAltitudePeriodPrv,
+                      wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_ALTITUDE,
+                      "Altitude", " m", event, &sensors_event_t::altitude,
+                      sensorsReturningFalse, retries);
+
+      // Light sensor
+      sensorEventRead(iter, curTime, &msgi2cResponse,
+                      &WipperSnapper_I2C_Driver::getEventLight,
+                      &WipperSnapper_I2C_Driver::getSensorLightPeriod,
+                      &WipperSnapper_I2C_Driver::getSensorLightPeriodPrv,
+                      &WipperSnapper_I2C_Driver::setSensorLightPeriodPrv,
+                      wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_LIGHT,
+                      "Light", " lux", event, &sensors_event_t::light,
+                      sensorsReturningFalse, retries);
+
+      // Lux sensor
+      sensorEventRead(iter, curTime, &msgi2cResponse,
+                      &WipperSnapper_I2C_Driver::getEventLux,
+                      &WipperSnapper_I2C_Driver::getSensorLuxPeriod,
+                      &WipperSnapper_I2C_Driver::getSensorLuxPeriodPrv,
+                      &WipperSnapper_I2C_Driver::setSensorLuxPeriodPrv,
+                      wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_LUX, "Lux",
+                      " lux", event, &sensors_event_t::light,
+                      sensorsReturningFalse, retries);
+
+      // PM10_STD sensor
+      sensorEventRead(iter, curTime, &msgi2cResponse,
+                      &WipperSnapper_I2C_Driver::getEventPM10_STD,
+                      &WipperSnapper_I2C_Driver::getSensorPM10_STDPeriod,
+                      &WipperSnapper_I2C_Driver::getSensorPM10_STDPeriodPrv,
+                      &WipperSnapper_I2C_Driver::setSensorPM10_STDPeriodPrv,
+                      wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_PM10_STD,
+                      "PM1.0", " ppm", event, &sensors_event_t::pm10_std,
+                      sensorsReturningFalse, retries);
+
+      // PM25_STD sensor
+      sensorEventRead(iter, curTime, &msgi2cResponse,
+                      &WipperSnapper_I2C_Driver::getEventPM25_STD,
+                      &WipperSnapper_I2C_Driver::getSensorPM25_STDPeriod,
+                      &WipperSnapper_I2C_Driver::getSensorPM25_STDPeriodPrv,
+                      &WipperSnapper_I2C_Driver::setSensorPM25_STDPeriodPrv,
+                      wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_PM25_STD,
+                      "PM2.5", " ppm", event, &sensors_event_t::pm25_std,
+                      sensorsReturningFalse, retries);
+
+      // PM100_STD sensor
+      sensorEventRead(iter, curTime, &msgi2cResponse,
+                      &WipperSnapper_I2C_Driver::getEventPM100_STD,
+                      &WipperSnapper_I2C_Driver::getSensorPM100_STDPeriod,
+                      &WipperSnapper_I2C_Driver::getSensorPM100_STDPeriodPrv,
+                      &WipperSnapper_I2C_Driver::setSensorPM100_STDPeriodPrv,
+                      wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_PM100_STD,
+                      "PM10.0", " ppm", event, &sensors_event_t::pm100_std,
+                      sensorsReturningFalse, retries);
+
+      // Voltage sensor
+      sensorEventRead(iter, curTime, &msgi2cResponse,
+                      &WipperSnapper_I2C_Driver::getEventVoltage,
+                      &WipperSnapper_I2C_Driver::getSensorVoltagePeriod,
+                      &WipperSnapper_I2C_Driver::getSensorVoltagePeriodPrv,
+                      &WipperSnapper_I2C_Driver::setSensorVoltagePeriodPrv,
+                      wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_VOLTAGE,
+                      "Voltage", " V", event, &sensors_event_t::voltage,
+                      sensorsReturningFalse, retries);
+
+      // Current sensor
+      sensorEventRead(iter, curTime, &msgi2cResponse,
+                      &WipperSnapper_I2C_Driver::getEventCurrent,
+                      &WipperSnapper_I2C_Driver::getSensorCurrentPeriod,
+                      &WipperSnapper_I2C_Driver::getSensorCurrentPeriodPrv,
+                      &WipperSnapper_I2C_Driver::setSensorCurrentPeriodPrv,
+                      wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_CURRENT,
+                      "Current", " mA", event, &sensors_event_t::current,
+                      sensorsReturningFalse, retries);
+
+      // Unitless % sensor
+      sensorEventRead(
+          iter, curTime, &msgi2cResponse,
+          &WipperSnapper_I2C_Driver::getEventUnitlessPercent,
+          &WipperSnapper_I2C_Driver::getSensorUnitlessPercentPeriod,
+          &WipperSnapper_I2C_Driver::getSensorUnitlessPercentPeriodPrv,
+          &WipperSnapper_I2C_Driver::setSensorUnitlessPercentPeriodPrv,
+          wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_UNITLESS_PERCENT,
+          "Unitless Percent", " %", event, &sensors_event_t::unitless_percent,
+          sensorsReturningFalse, retries);
+
+      // Raw sensor
+      sensorEventRead(iter, curTime, &msgi2cResponse,
+                      &WipperSnapper_I2C_Driver::getEventRaw,
+                      &WipperSnapper_I2C_Driver::getSensorRawPeriod,
+                      &WipperSnapper_I2C_Driver::getSensorRawPeriodPrv,
+                      &WipperSnapper_I2C_Driver::setSensorRawPeriodPrv,
+                      wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_RAW, "Raw",
+                      "", event, nullptr, sensorsReturningFalse, retries);
+
+      // Gas sensor
+      sensorEventRead(
+          iter, curTime, &msgi2cResponse,
+          &WipperSnapper_I2C_Driver::getEventGasResistance,
+          &WipperSnapper_I2C_Driver::getSensorGasResistancePeriod,
+          &WipperSnapper_I2C_Driver::getSensorGasResistancePeriodPrv,
+          &WipperSnapper_I2C_Driver::setSensorGasResistancePeriodPrv,
+          wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_GAS_RESISTANCE,
+          "Gas Resistance", " Ohms", event, &sensors_event_t::gas_resistance,
+          sensorsReturningFalse, retries);
+
+      // NOx-index sensor
+      sensorEventRead(iter, curTime, &msgi2cResponse,
+                      &WipperSnapper_I2C_Driver::getEventNOxIndex,
+                      &WipperSnapper_I2C_Driver::getSensorNOxIndexPeriod,
+                      &WipperSnapper_I2C_Driver::getSensorNOxIndexPeriodPrv,
+                      &WipperSnapper_I2C_Driver::setSensorNOxIndexPeriodPrv,
+                      wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_NOX_INDEX,
+                      "NOx Index", "", event, &sensors_event_t::nox_index,
+                      sensorsReturningFalse, retries);
+
+      // VOC-index sensor
+      sensorEventRead(iter, curTime, &msgi2cResponse,
+                      &WipperSnapper_I2C_Driver::getEventVOCIndex,
+                      &WipperSnapper_I2C_Driver::getSensorVOCIndexPeriod,
+                      &WipperSnapper_I2C_Driver::getSensorVOCIndexPeriodPrv,
+                      &WipperSnapper_I2C_Driver::setSensorVOCIndexPeriodPrv,
+                      wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_VOC_INDEX,
+                      "VOC Index", "", event, &sensors_event_t::voc_index,
+                      sensorsReturningFalse, retries);
+
+      // Proximity sensor -- sends using event.data[0] same as raw sensor_type
+      sensorEventRead(iter, curTime, &msgi2cResponse,
+                      &WipperSnapper_I2C_Driver::getEventProximity,
+                      &WipperSnapper_I2C_Driver::sensorProximityPeriod,
+                      &WipperSnapper_I2C_Driver::SensorProximityPeriodPrv,
+                      &WipperSnapper_I2C_Driver::setSensorProximityPeriodPrv,
+                      wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_PROXIMITY,
+                      "Proximity", "", event, nullptr, sensorsReturningFalse,
+                      retries);
+
+      // Did this driver obtain data from sensors?
+      if (msgi2cResponse.payload.resp_i2c_device_event.sensor_event_count ==
+          0) {
+        continue;
       }
-    }
 
-    // Ambient Temperature sensor (°F)
-    curTime = millis();
-    if ((*iter)->getSensorAmbientTempFPeriod() != 0L &&
-        curTime - (*iter)->getSensorAmbientTempFPeriodPrv() >
-            (*iter)->getSensorAmbientTempFPeriod()) {
-      if ((*iter)->getEventAmbientTempF(&event)) {
-        WS_DEBUG_PRINT("Sensor 0x");
-        WS_DEBUG_PRINTHEX((*iter)->getI2CAddress());
-        WS_DEBUG_PRINTLN("");
-        WS_DEBUG_PRINT("\tAmbient Temp.: ");
-        WS_DEBUG_PRINT(event.temperature);
-        WS_DEBUG_PRINTLN("°F");
+      displayDeviceEventMessage(&msgi2cResponse, (*iter)->getI2CAddress());
 
-        (*iter)->setSensorAmbientTempFPeriodPrv(curTime);
-
-        fillEventMessage(
-            &msgi2cResponse, event.temperature,
-            wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_AMBIENT_TEMPERATURE_FAHRENHEIT);
-      } else {
-        WS_DEBUG_PRINTLN(
-            "ERROR: Failed to obtain ambient temp. (°F)) sensor reading!");
+      // Encode and publish I2CDeviceEvent message
+      if (!encodePublishI2CDeviceEventMsg(&msgi2cResponse,
+                                          (*iter)->getI2CAddress())) {
+        WS_DEBUG_PRINTLN("ERROR: Failed to encode and publish I2CDeviceEvent!");
+        continue;
       }
-    }
+    } // end of retry loop
+  }
+}
 
-    // OBJECT_TEMPERATURE sensor (°C)
-    curTime = millis();
-    if ((*iter)->getSensorObjectTempPeriod() != 0L &&
-        curTime - (*iter)->getSensorObjectTempPeriodPrv() >
-            (*iter)->getSensorObjectTempPeriod()) {
-      if ((*iter)->getEventObjectTemp(&event)) {
-        WS_DEBUG_PRINT("Sensor 0x");
-        WS_DEBUG_PRINTHEX((*iter)->getI2CAddress());
-        WS_DEBUG_PRINTLN("");
-        WS_DEBUG_PRINT("\tTemperature: ");
-        WS_DEBUG_PRINT(event.temperature);
-        WS_DEBUG_PRINTLN("°C");
-
-        // pack event data into msg
-        fillEventMessage(
-            &msgi2cResponse, event.temperature,
-            wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_OBJECT_TEMPERATURE);
-
-        (*iter)->setSensorObjectTempPeriodPrv(curTime);
+/*******************************************************************************/
+/*!
+    @brief    Reads a sensor event from an I2C device driver.
+    @param    iter
+              An iterator pointing to the current I2C device driver.
+    @param    curTime
+              The current time in milliseconds.
+    @param    msgi2cResponse
+              A pointer to the I2CResponse message.
+    @param    getEventFunc
+              A pointer to the I2C device driver's getEvent function.
+    @param    getPeriodFunc
+              A pointer to the I2C device driver's getPeriod function.
+    @param    getPeriodPrvFunc
+              A pointer to the I2C device driver's getPeriodPrv function.
+    @param    setPeriodPrvFunc
+              A pointer to the I2C device driver's setPeriodPrv function.
+    @param    sensorType
+              The type of sensor being read.
+    @param    sensorName
+              The name of the sensor being read.
+    @param    unit
+              The unit of measurement for the sensor.
+    @param    event
+              A sensors_event_t struct.
+    @param    valueMember
+              Pointer to sensors_event_t struct's value member unless data[0].
+    @param    sensorsReturningFalse
+              A boolean indicating if the sensor is returning false.
+    @param    retries
+              The number of retries left for the sensor.
+*/
+void WipperSnapper_Component_I2C::sensorEventRead(
+    std::vector<WipperSnapper_I2C_Driver *>::iterator &iter,
+    unsigned long curTime, wippersnapper_signal_v1_I2CResponse *msgi2cResponse,
+    bool (WipperSnapper_I2C_Driver::*getEventFunc)(sensors_event_t *),
+    long (WipperSnapper_I2C_Driver::*getPeriodFunc)(),
+    long (WipperSnapper_I2C_Driver::*getPeriodPrvFunc)(),
+    void (WipperSnapper_I2C_Driver::*setPeriodPrvFunc)(long),
+    wippersnapper_i2c_v1_SensorType sensorType, const char *sensorName,
+    const char *unit, sensors_event_t event,
+    float sensors_event_t::*valueMember, bool &sensorsReturningFalse,
+    int &retries) {
+  // sensorName used for prefix + error message, units is value suffix
+  curTime = millis();
+  if (((*iter)->*getPeriodFunc)() != 0L &&
+      curTime - ((*iter)->*getPeriodPrvFunc)() > ((*iter)->*getPeriodFunc)()) {
+    // within the period, read the sensor
+    if (((*iter)->*getEventFunc)(&event)) {
+      float value;
+      if (sensorType == wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_RAW ||
+          sensorType == wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_PROXIMITY) {
+        value = event.data[0];
       } else {
-        WS_DEBUG_PRINTLN(
-            "ERROR: Failed to get object temperature sensor (°C) reading!");
+        value = event.*valueMember;
       }
-    }
+      WS_DEBUG_PRINT("Sensor 0x");
+      WS_DEBUG_PRINTHEX((*iter)->getI2CAddress());
+      WS_DEBUG_PRINTLN("");
+      WS_DEBUG_PRINT("\t");
+      WS_DEBUG_PRINTVAR(sensorName);
+      WS_DEBUG_PRINT(": ");
+      WS_DEBUG_PRINTVAR(value);
+      WS_DEBUG_PRINTLNVAR(unit);
 
-    // OBJECT_TEMPERATURE sensor (°F)
-    curTime = millis();
-    if ((*iter)->getSensorObjectTempFPeriod() != 0L &&
-        curTime - (*iter)->getSensorObjectTempFPeriodPrv() >
-            (*iter)->getSensorObjectTempFPeriod()) {
-      if ((*iter)->getEventObjectTempF(&event)) {
-        WS_DEBUG_PRINT("Sensor 0x");
-        WS_DEBUG_PRINTHEX((*iter)->getI2CAddress());
-        WS_DEBUG_PRINTLN("");
-        WS_DEBUG_PRINT("\tTemperature: ");
-        WS_DEBUG_PRINT(event.temperature);
-        WS_DEBUG_PRINTLN("°F");
+      // pack event data into msg
+      fillEventMessage(msgi2cResponse, value, sensorType);
 
-        // pack event data into msg
-        fillEventMessage(
-            &msgi2cResponse, event.temperature,
-            wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_OBJECT_TEMPERATURE_FAHRENHEIT);
-
-        (*iter)->setSensorObjectTempFPeriodPrv(curTime);
-      } else {
-        WS_DEBUG_PRINTLN(
-            "ERROR: Failed to get object temperature sensor (°F) reading!");
+      ((*iter)->*setPeriodPrvFunc)(curTime);
+    } else {
+      WS_DEBUG_PRINT("ERROR: Failed to get ");
+      WS_DEBUG_PRINTVAR(sensorName);
+      WS_DEBUG_PRINTLN(" reading!");
+      sensorsReturningFalse = true;
+      if (retries == 1) {
+        ((*iter)->*setPeriodPrvFunc)(curTime);
       }
-    }
-
-    // RELATIVE_HUMIDITY sensor
-    curTime = millis();
-    if ((*iter)->getSensorRelativeHumidityPeriod() != 0L &&
-        curTime - (*iter)->getSensorRelativeHumidityPeriodPrv() >
-            (*iter)->getSensorRelativeHumidityPeriod()) {
-      if ((*iter)->getEventRelativeHumidity(&event)) {
-        WS_DEBUG_PRINT("Sensor 0x");
-        WS_DEBUG_PRINTHEX((*iter)->getI2CAddress());
-        WS_DEBUG_PRINTLN("");
-        WS_DEBUG_PRINT("\tHumidity: ");
-        WS_DEBUG_PRINT(event.relative_humidity);
-        WS_DEBUG_PRINTLN("%RH");
-
-        // pack event data into msg
-        fillEventMessage(
-            &msgi2cResponse, event.relative_humidity,
-            wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_RELATIVE_HUMIDITY);
-
-        (*iter)->setSensorRelativeHumidityPeriodPrv(curTime);
-      } else {
-        WS_DEBUG_PRINTLN("ERROR: Failed to get humidity sensor reading!");
-      }
-    }
-
-    // PRESSURE sensor
-    curTime = millis();
-    if ((*iter)->getSensorPressurePeriod() != 0L &&
-        curTime - (*iter)->getSensorPressurePeriodPrv() >
-            (*iter)->getSensorPressurePeriod()) {
-      if ((*iter)->getEventPressure(&event)) {
-        WS_DEBUG_PRINT("Sensor 0x");
-        WS_DEBUG_PRINTHEX((*iter)->getI2CAddress());
-        WS_DEBUG_PRINTLN("");
-        WS_DEBUG_PRINT("\tPressure: ");
-        WS_DEBUG_PRINT(event.pressure);
-        WS_DEBUG_PRINTLN(" hPa");
-
-        // pack event data into msg
-        fillEventMessage(&msgi2cResponse, event.pressure,
-                         wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_PRESSURE);
-
-        (*iter)->setSensorPressurePeriodPrv(curTime);
-      } else {
-        WS_DEBUG_PRINTLN("ERROR: Failed to get Pressure sensor reading!");
-      }
-    }
-
-    // CO2 sensor
-    curTime = millis();
-    if ((*iter)->getSensorCO2Period() != 0L &&
-        curTime - (*iter)->getSensorCO2PeriodPrv() >
-            (*iter)->getSensorCO2Period()) {
-      if ((*iter)->getEventCO2(&event)) {
-        WS_DEBUG_PRINT("Sensor 0x");
-        WS_DEBUG_PRINTHEX((*iter)->getI2CAddress());
-        WS_DEBUG_PRINTLN("");
-        WS_DEBUG_PRINT("\tCO2: ");
-        WS_DEBUG_PRINT(event.CO2);
-        WS_DEBUG_PRINTLN(" ppm");
-
-        fillEventMessage(&msgi2cResponse, event.CO2,
-                         wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_CO2);
-        (*iter)->setSensorCO2PeriodPrv(curTime);
-      } else {
-        WS_DEBUG_PRINTLN("ERROR: Failed to obtain CO2 sensor reading!");
-      }
-    }
-
-    // eCO2 sensor
-    curTime = millis();
-    if ((*iter)->getSensorECO2Period() != 0L &&
-        curTime - (*iter)->getSensorECO2PeriodPrv() >
-            (*iter)->getSensorECO2Period()) {
-      if ((*iter)->getEventECO2(&event)) {
-        WS_DEBUG_PRINT("Sensor 0x");
-        WS_DEBUG_PRINTHEX((*iter)->getI2CAddress());
-        WS_DEBUG_PRINTLN("");
-        WS_DEBUG_PRINT("\teCO2: ");
-        WS_DEBUG_PRINT(event.eCO2);
-        WS_DEBUG_PRINTLN(" ppm");
-
-        fillEventMessage(&msgi2cResponse, event.eCO2,
-                         wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_ECO2);
-        (*iter)->setSensorECO2PeriodPrv(curTime);
-      } else {
-        WS_DEBUG_PRINTLN("ERROR: Failed to obtain eCO2 sensor reading!");
-      }
-    }
-
-    // TVOC sensor
-    curTime = millis();
-    if ((*iter)->getSensorTVOCPeriod() != 0L &&
-        curTime - (*iter)->getSensorTVOCPeriodPrv() >
-            (*iter)->getSensorTVOCPeriod()) {
-      if ((*iter)->getEventTVOC(&event)) {
-        WS_DEBUG_PRINT("Sensor 0x");
-        WS_DEBUG_PRINTHEX((*iter)->getI2CAddress());
-        WS_DEBUG_PRINTLN("");
-        WS_DEBUG_PRINT("\tTVOC: ");
-        WS_DEBUG_PRINT(event.tvoc);
-        WS_DEBUG_PRINTLN(" ppb");
-
-        fillEventMessage(&msgi2cResponse, event.tvoc,
-                         wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_TVOC);
-        (*iter)->setSensorTVOCPeriodPrv(curTime);
-      } else {
-        WS_DEBUG_PRINTLN("ERROR: Failed to obtain TVOC sensor reading!");
-      }
-    }
-
-    // Altitude sensor
-    curTime = millis();
-    if ((*iter)->getSensorAltitudePeriod() != 0L &&
-        curTime - (*iter)->getSensorAltitudePeriodPrv() >
-            (*iter)->getSensorAltitudePeriod()) {
-      if ((*iter)->getEventAltitude(&event)) {
-        WS_DEBUG_PRINT("Sensor 0x");
-        WS_DEBUG_PRINTHEX((*iter)->getI2CAddress());
-        WS_DEBUG_PRINTLN("");
-        WS_DEBUG_PRINT("\tAltitude: ");
-        WS_DEBUG_PRINT(event.altitude);
-        WS_DEBUG_PRINTLN(" m");
-
-        // pack event data into msg
-        fillEventMessage(&msgi2cResponse, event.altitude,
-                         wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_ALTITUDE);
-
-        (*iter)->setSensorAltitudePeriodPrv(curTime);
-      } else {
-        WS_DEBUG_PRINTLN("ERROR: Failed to get altitude sensor reading!");
-      }
-    }
-
-    // Light sensor
-    curTime = millis();
-    if ((*iter)->getSensorLightPeriod() != 0L &&
-        curTime - (*iter)->getSensorLightPeriodPrv() >
-            (*iter)->getSensorLightPeriod()) {
-      if ((*iter)->getEventLight(&event)) {
-        WS_DEBUG_PRINT("Sensor 0x");
-        WS_DEBUG_PRINTHEX((*iter)->getI2CAddress());
-        WS_DEBUG_PRINTLN("");
-        WS_DEBUG_PRINT("\tLight: ");
-        WS_DEBUG_PRINT(event.light);
-        WS_DEBUG_PRINTLN(" lux");
-
-        // pack event data into msg
-        fillEventMessage(&msgi2cResponse, event.light,
-                         wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_LIGHT);
-
-        (*iter)->setSensorLightPeriodPrv(curTime);
-      } else {
-        WS_DEBUG_PRINTLN("ERROR: Failed to get light sensor reading!");
-      }
-    }
-
-    // PM10_STD sensor
-    curTime = millis();
-    if ((*iter)->getSensorPM10_STDPeriod() != 0L &&
-        curTime - (*iter)->getSensorPM10_STDPeriodPrv() >
-            (*iter)->getSensorPM10_STDPeriod()) {
-      if ((*iter)->getEventPM10_STD(&event)) {
-        WS_DEBUG_PRINT("Sensor 0x");
-        WS_DEBUG_PRINTHEX((*iter)->getI2CAddress());
-        WS_DEBUG_PRINTLN("");
-        WS_DEBUG_PRINT("\tPM1.0: ");
-        WS_DEBUG_PRINT(event.pm10_std);
-        WS_DEBUG_PRINTLN(" ppm");
-
-        // pack event data into msg
-        fillEventMessage(&msgi2cResponse, event.pm10_std,
-                         wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_PM10_STD);
-      } else {
-        WS_DEBUG_PRINTLN("ERROR: Failed to get PM1.0 sensor reading!");
-      }
-      // try again in curTime seconds
-      (*iter)->setSensorPM10_STDPeriodPrv(curTime);
-    }
-
-    // PM25_STD sensor
-    curTime = millis();
-    if ((*iter)->getSensorPM25_STDPeriod() != 0L &&
-        curTime - (*iter)->getSensorPM25_STDPeriodPrv() >
-            (*iter)->getSensorPM25_STDPeriod()) {
-      if ((*iter)->getEventPM25_STD(&event)) {
-        WS_DEBUG_PRINT("Sensor 0x");
-        WS_DEBUG_PRINTHEX((*iter)->getI2CAddress());
-        WS_DEBUG_PRINTLN("");
-        WS_DEBUG_PRINT("\tPM2.5: ");
-        WS_DEBUG_PRINT(event.pm25_std);
-        WS_DEBUG_PRINTLN(" ppm");
-
-        // pack event data into msg
-        fillEventMessage(&msgi2cResponse, event.pm25_std,
-                         wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_PM25_STD);
-      } else {
-        WS_DEBUG_PRINTLN("ERROR: Failed to get PM2.5 sensor reading!");
-      }
-      // try again in curTime seconds
-      (*iter)->setSensorPM25_STDPeriodPrv(curTime);
-    }
-
-    // PM100_STD sensor
-    curTime = millis();
-    if ((*iter)->getSensorPM100_STDPeriod() != 0L &&
-        curTime - (*iter)->getSensorPM100_STDPeriodPrv() >
-            (*iter)->getSensorPM100_STDPeriod()) {
-      if ((*iter)->getEventPM100_STD(&event)) {
-        WS_DEBUG_PRINT("Sensor 0x");
-        WS_DEBUG_PRINTHEX((*iter)->getI2CAddress());
-        WS_DEBUG_PRINTLN("");
-        WS_DEBUG_PRINT("\tPM10.0: ");
-        WS_DEBUG_PRINT(event.pm25_std);
-        WS_DEBUG_PRINTLN(" ppm");
-
-        // pack event data into msg
-        fillEventMessage(&msgi2cResponse, event.pm25_std,
-                         wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_PM100_STD);
-      } else {
-        WS_DEBUG_PRINTLN("ERROR: Failed to get PM10.0 sensor reading!");
-      }
-      (*iter)->setSensorPM100_STDPeriodPrv(
-          curTime); // try again in curTime seconds
-    }
-
-    // Voltage sensor
-    curTime = millis();
-    if ((*iter)->getSensorVoltagePeriod() != 0L &&
-        curTime - (*iter)->getSensorVoltagePeriodPrv() >
-            (*iter)->getSensorVoltagePeriod()) {
-      if ((*iter)->getEventVoltage(&event)) {
-        WS_DEBUG_PRINT("Sensor 0x");
-        WS_DEBUG_PRINTHEX((*iter)->getI2CAddress());
-        WS_DEBUG_PRINTLN("");
-        WS_DEBUG_PRINT("\tVoltage: ");
-        WS_DEBUG_PRINT(event.voltage);
-        WS_DEBUG_PRINTLN(" v");
-
-        // pack event data into msg
-        fillEventMessage(&msgi2cResponse, event.voltage,
-                         wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_VOLTAGE);
-      } else {
-        WS_DEBUG_PRINTLN("ERROR: Failed to get voltage sensor reading!");
-      }
-      // try again in curTime seconds
-      (*iter)->setSensorVoltagePeriodPrv(curTime);
-    }
-
-    // Current sensor
-    curTime = millis();
-    if ((*iter)->getSensorCurrentPeriod() != 0L &&
-        curTime - (*iter)->getSensorCurrentPeriodPrv() >
-            (*iter)->getSensorCurrentPeriod()) {
-      if ((*iter)->getEventCurrent(&event)) {
-        WS_DEBUG_PRINT("Sensor 0x");
-        WS_DEBUG_PRINTHEX((*iter)->getI2CAddress());
-        WS_DEBUG_PRINTLN("");
-        WS_DEBUG_PRINT("\tCurrent: ");
-        WS_DEBUG_PRINT(event.current);
-        WS_DEBUG_PRINTLN(" mA");
-
-        // pack event data into msg
-        fillEventMessage(&msgi2cResponse, event.current,
-                         wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_CURRENT);
-      } else {
-        WS_DEBUG_PRINTLN("ERROR: Failed to get Current sensor reading!");
-      }
-      // try again in curTime seconds
-      (*iter)->setSensorCurrentPeriodPrv(curTime);
-    }
-
-    // Unitless % sensor
-    curTime = millis();
-    if ((*iter)->getSensorUnitlessPercentPeriod() != 0L &&
-        curTime - (*iter)->getSensorUnitlessPercentPeriodPrv() >
-            (*iter)->getSensorUnitlessPercentPeriod()) {
-      if ((*iter)->getEventUnitlessPercent(&event)) {
-        WS_DEBUG_PRINT("Sensor 0x");
-        WS_DEBUG_PRINTHEX((*iter)->getI2CAddress());
-        WS_DEBUG_PRINTLN("");
-        WS_DEBUG_PRINT("\tRead: ");
-        WS_DEBUG_PRINT(event.unitless_percent);
-        WS_DEBUG_PRINTLN(" %");
-
-        // pack event data into msg
-        fillEventMessage(
-            &msgi2cResponse, event.unitless_percent,
-            wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_UNITLESS_PERCENT);
-      } else {
-        WS_DEBUG_PRINTLN(
-            "ERROR: Failed to get unitless percent sensor reading!");
-      }
-      // try again in curTime seconds
-      (*iter)->setSensorUnitlessPercentPeriodPrv(curTime);
-    }
-
-    // Raw sensor
-    curTime = millis();
-    if ((*iter)->getSensorRawPeriod() != 0L &&
-        curTime - (*iter)->getSensorRawPeriodPrv() >
-            (*iter)->getSensorRawPeriod()) {
-      if ((*iter)->getEventRaw(&event)) {
-        WS_DEBUG_PRINT("Sensor 0x");
-        WS_DEBUG_PRINTHEX((*iter)->getI2CAddress());
-        WS_DEBUG_PRINTLN("");
-        WS_DEBUG_PRINT("\tRaw: ");
-        WS_DEBUG_PRINTLN(event.data[0]);
-
-        fillEventMessage(&msgi2cResponse, event.data[0],
-                         wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_RAW);
-      } else {
-        WS_DEBUG_PRINTLN("ERROR: Failed to obtain Raw sensor reading!");
-      }
-      (*iter)->setSensorRawPeriodPrv(curTime);
-    }
-
-    // Gas sensor
-    curTime = millis();
-    if ((*iter)->getSensorGasResistancePeriod() != 0L &&
-        curTime - (*iter)->getSensorGasResistancePeriodPrv() >
-            (*iter)->getSensorGasResistancePeriod()) {
-      if ((*iter)->getEventGasResistance(&event)) {
-        WS_DEBUG_PRINT("Sensor 0x");
-        WS_DEBUG_PRINTHEX((*iter)->getI2CAddress());
-        WS_DEBUG_PRINTLN("");
-        WS_DEBUG_PRINT("\tGas Resistance: ");
-        WS_DEBUG_PRINT(event.gas_resistance);
-        WS_DEBUG_PRINT(" ohms");
-
-        fillEventMessage(
-            &msgi2cResponse, event.gas_resistance,
-            wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_GAS_RESISTANCE);
-      } else {
-        WS_DEBUG_PRINTLN(
-            "ERROR: Failed to obtain gas resistance sensor reading!");
-      }
-      (*iter)->setSensorGasResistancePeriodPrv(curTime);
-    }
-
-    // NOx-index sensor
-    curTime = millis();
-    if ((*iter)->getSensorNOxIndexPeriod() != 0L &&
-        curTime - (*iter)->getSensorNOxIndexPeriodPrv() >
-            (*iter)->getSensorNOxIndexPeriod()) {
-      if ((*iter)->getEventNOxIndex(&event)) {
-        WS_DEBUG_PRINT("Sensor 0x");
-        WS_DEBUG_PRINTHEX((*iter)->getI2CAddress());
-        WS_DEBUG_PRINTLN("");
-        WS_DEBUG_PRINT("\tNOx Index: ");
-        WS_DEBUG_PRINT(event.nox_index);
-
-        fillEventMessage(&msgi2cResponse, event.data[0],
-                         wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_NOX_INDEX);
-      } else {
-        WS_DEBUG_PRINTLN("ERROR: Failed to obtain NOx index sensor reading!");
-      }
-      (*iter)->setSensorNOxIndexPeriodPrv(curTime);
-    }
-
-    // VOC-index sensor
-    curTime = millis();
-    if ((*iter)->getSensorVOCIndexPeriod() != 0L &&
-        curTime - (*iter)->getSensorVOCIndexPeriodPrv() >
-            (*iter)->getSensorVOCIndexPeriod()) {
-      if ((*iter)->getEventVOCIndex(&event)) {
-        WS_DEBUG_PRINT("Sensor 0x");
-        WS_DEBUG_PRINTHEX((*iter)->getI2CAddress());
-        WS_DEBUG_PRINTLN("");
-        WS_DEBUG_PRINT("\tVOC Index: ");
-        WS_DEBUG_PRINT(event.voc_index);
-
-        fillEventMessage(&msgi2cResponse, event.data[0],
-                         wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_VOC_INDEX);
-      } else {
-        WS_DEBUG_PRINTLN("ERROR: Failed to obtain VOC index sensor reading!");
-      }
-      (*iter)->setSensorVOCIndexPeriodPrv(curTime);
-    }
-    // Proximity sensor
-    curTime = millis();
-    if ((*iter)->sensorProximityPeriod() != 0L &&
-        curTime - (*iter)->SensorProximityPeriodPrv() >
-            (*iter)->sensorProximityPeriod()) {
-      if ((*iter)->getEventProximity(&event)) {
-        WS_DEBUG_PRINT("Sensor 0x");
-        WS_DEBUG_PRINTHEX((*iter)->getI2CAddress());
-        WS_DEBUG_PRINTLN("");
-        WS_DEBUG_PRINT("\tProximity: ");
-        WS_DEBUG_PRINT(event.data[0]);
-
-        // pack event data into msg
-        fillEventMessage(&msgi2cResponse, event.data[0],
-                         wippersnapper_i2c_v1_SensorType_SENSOR_TYPE_PROXIMITY);
-
-        (*iter)->setSensorProximityPeriodPrv(curTime);
-      } else {
-        WS_DEBUG_PRINTLN("ERROR: Failed to get proximity sensor reading!");
-      }
-    }
-
-    // Did this driver obtain data from sensors?
-    if (msgi2cResponse.payload.resp_i2c_device_event.sensor_event_count == 0)
-      continue;
-
-    displayDeviceEventMessage(&msgi2cResponse, (*iter)->getI2CAddress());
-
-    // Encode and publish I2CDeviceEvent message
-    if (!encodePublishI2CDeviceEventMsg(&msgi2cResponse,
-                                        (*iter)->getI2CAddress())) {
-      WS_DEBUG_PRINTLN("ERROR: Failed to encode and publish I2CDeviceEvent!");
-      continue;
     }
   }
 }

@@ -21,20 +21,16 @@
 #include "Adafruit_MQTT.h"
 #include "Adafruit_MQTT_Client.h"
 #include "ESP8266WiFi.h"
+#include "ESP8266WiFiMulti.h"
 #include "Wippersnapper.h"
 
-/* NOTE - Projects that require "Secure MQTT" (TLS/SSL) also require a new
- * SSL certificate every year. If adding Secure MQTT to your ESP8266 project is
- * important  - please switch to using the modern ESP32 (and related models)
- * instead of the ESP8266 to avoid updating the SSL fingerprint every year.
- *
- * If you've read through this and still want to use "Secure MQTT" with your
- * ESP8266 project, we've left the "WiFiClientSecure" lines commented out. To
- * use them, uncomment the commented out lines within this file and re-compile
- * the library.
+/* NOTE - As of 07/21/26, this library no longer supports "Secure MQTT"
+ * (TLS/SSL) on the ESP8266 due to new automatic certificate updates that
+ * require a new certificate every 199 days (or less) -
+ * https://forums.adafruit.com/viewtopic.php?t=224362 If you would like a secure
+ * Adafruit IO Arduino project, please switch to using the modern ESP32 (and
+ * related models) instead of the ESP8266.
  */
-// static const char *fingerprint PROGMEM =  "4E C1 52 73 24 A8 36 D6 7A 4C 67
-// C7 91 0C 0A 22 B9 2D 5B CA";
 
 extern Wippersnapper WS;
 
@@ -64,6 +60,8 @@ public:
     _ssid = 0;
     _pass = 0;
     _wifi_client = new WiFiClient;
+    WiFi.persistent(false);
+    WiFi.mode(WIFI_STA);
   }
 
   /**************************************************************************/
@@ -130,23 +128,40 @@ public:
       return false;
     }
 
-    // Was the network within secrets.json found?
-    for (int i = 0; i < n; ++i) {
-      if (strcmp(_ssid, WiFi.SSID(i).c_str()) == 0)
-        return true;
+    bool foundNetwork = false;
+
+    WS_DEBUG_PRINTLN("WipperSnapper found these WiFi networks:");
+    for (uint8_t i = 0; i < n; i++) {
+      if (!foundNetwork && strcmp(WiFi.SSID(i).c_str(), _ssid) == 0) {
+        foundNetwork = true;
+      } else if (!foundNetwork && WS._isWiFiMulti) {
+        // multi network mode
+        for (int j = 0; j < WS_MAX_ALT_WIFI_NETWORKS; j++) {
+          if (strcmp(WS._multiNetworks[j].ssid, WiFi.SSID(i).c_str()) == 0) {
+            foundNetwork = true;
+          }
+        }
+      }
+      WS_DEBUG_PRINTVAR(WiFi.SSID(i));
+      WS_DEBUG_PRINT(" (");
+      uint8_t BSSID[WL_MAC_ADDR_LENGTH];
+      memcpy(BSSID, WiFi.BSSID(i), WL_MAC_ADDR_LENGTH);
+      for (int m = 0; m < WL_MAC_ADDR_LENGTH; m++) {
+        if (m != 0)
+          WS_DEBUG_PRINT(":");
+        WS_DEBUG_PRINTHEX(BSSID[m]);
+      }
+      WS_DEBUG_PRINT(") ");
+      WS_DEBUG_PRINTVAR(WiFi.RSSI(i));
+      WS_DEBUG_PRINT("dB (ch");
+      WS_DEBUG_PRINTVAR(WiFi.channel(i))
+      WS_DEBUG_PRINTLN(")");
     }
 
-    // User-set network not found, print scan results to serial console
-    WS_DEBUG_PRINTLN("ERROR: Your requested WiFi network was not found!");
-    WS_DEBUG_PRINTLN("WipperSnapper found these WiFi networks: ");
-    for (int i = 0; i < n; ++i) {
-      WS_DEBUG_PRINT(WiFi.SSID(i));
-      WS_DEBUG_PRINT(" ");
-      WS_DEBUG_PRINT(WiFi.RSSI(i));
-      WS_DEBUG_PRINTLN("dB");
+    if (!foundNetwork) {
+      WS_DEBUG_PRINTLN("ERROR: Your requested WiFi network was not found!");
     }
-
-    return false;
+    return foundNetwork;
   }
 
   /********************************************************/
@@ -161,6 +176,14 @@ public:
     memcpy(WS._macAddr, mac, sizeof(mac));
   }
 
+  /********************************************************/
+  /*!
+  @brief  Gets the current network RSSI value
+  @return int32_t RSSI value
+  */
+  /********************************************************/
+  int32_t getRSSI() { return WiFi.RSSI(); }
+
   /*******************************************************************/
   /*!
   @brief  Sets up an Adafruit_MQTT_Client
@@ -169,14 +192,11 @@ public:
   */
   /*******************************************************************/
   void setupMQTTClient(const char *clientID) {
-    // Uncomment the following lines to use MQTT/SSL. You will need to
-    // re-compile after. _wifi_client->setFingerprint(fingerprint); WS._mqtt =
-    // new Adafruit_MQTT_Client(_wifi_client, WS._config.aio_url,
-    // WS._config.io_port, clientID, WS._config.aio_user, WS._config.aio_key);
-
-    WS._mqtt = new Adafruit_MQTT_Client(_wifi_client, WS._config.aio_url, 1883,
-                                        clientID, WS._config.aio_user,
-                                        WS._config.aio_key);
+    if (WS._config.io_port == 8883)
+      WS._config.io_port = 1883;
+    WS._mqtt = new Adafruit_MQTT_Client(
+        _wifi_client, WS._config.aio_url, WS._config.io_port, clientID,
+        WS._config.aio_user, WS._config.aio_key);
   }
 
   /********************************************************/
@@ -210,6 +230,7 @@ protected:
   const char *_ssid = NULL;
   const char *_pass = NULL;
   WiFiClient *_wifi_client;
+  ESP8266WiFiMulti _wifiMulti;
 
   /**************************************************************************/
   /*!
@@ -221,21 +242,51 @@ protected:
     if (WiFi.status() == WL_CONNECTED)
       return;
 
-    // Attempt connection
-    _disconnect();
-    delay(100);
-    // ESP8266 MUST be in STA mode to avoid device acting as client/server
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(_ssid, _pass);
-    _status = WS_NET_DISCONNECTED;
-    delay(100);
+    if (strlen(_ssid) == 0) {
+      _status = WS_SSID_INVALID;
+    } else {
+      WiFi.setAutoReconnect(false);
+      // Attempt connection
+      _disconnect();
+      delay(100);
+      // ESP8266 MUST be in STA mode to avoid device acting as client/server
+      WiFi.mode(WIFI_STA);
+      _status = WS_NET_DISCONNECTED;
+      delay(100);
 
-    // wait for a connection to be established
-    long startRetry = millis();
-    WS_DEBUG_PRINTLN("CONNECTING");
-    while (WiFi.status() != WL_CONNECTED && millis() - startRetry < 10000) {
-      // ESP8266 WDT requires yield() during a busy-loop so it doesn't bite
-      yield();
+      if (WS._isWiFiMulti) {
+        // multi network mode
+        for (int i = 0; i < WS_MAX_ALT_WIFI_NETWORKS; i++) {
+          if (strlen(WS._multiNetworks[i].ssid) > 0 &&
+              (_wifiMulti.existsAP(WS._multiNetworks[i].ssid) == false)) {
+            // doesn't exist, add it
+            _wifiMulti.addAP(WS._multiNetworks[i].ssid,
+                             WS._multiNetworks[i].pass);
+          }
+        }
+      }
+
+      // add default network
+      if (_wifiMulti.existsAP(_ssid) == false) {
+        _wifiMulti.addAP(_ssid, _pass);
+      }
+
+      long startRetry = millis();
+      WS_DEBUG_PRINTLN("CONNECTING");
+
+      while (_wifiMulti.run(5000) != WL_CONNECTED &&
+             millis() - startRetry < 10000) {
+        // ESP8266 WDT requires yield() during a busy-loop so it doesn't bite
+        yield();
+      }
+
+      if (WiFi.status() == WL_CONNECTED) {
+        _status = WS_NET_CONNECTED;
+      } else {
+        _status = WS_NET_DISCONNECTED;
+      }
+
+      WS.feedWDT();
     }
   }
 

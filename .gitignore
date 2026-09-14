@@ -40,9 +40,30 @@ html/*
 .vscode/*
 src/.vscode/settings.json
 
+# Visual Studio artifacts
+.vs/
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+
 .DS_STORE
 
 examples/Wippersnapper_demo/build/
 
-#Platformio artifacts
+# Platformio artifacts
 .pio/
+
+# Secrets
+data/
+
+# Misc. Data
+tests/
+venv/
+
+Doxyfile
+
+.repos/
+repos/
+Wippersnapper_Components/
+Wippersnapper_Boards/
+.claude/settings.local.json

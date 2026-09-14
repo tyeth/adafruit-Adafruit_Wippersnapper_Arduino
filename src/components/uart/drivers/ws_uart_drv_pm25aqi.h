@@ -81,14 +81,17 @@ public:
   /*******************************************************************************/
   bool begin() override {
     _aqi = new Adafruit_PM25AQI();
+    bool is_pm1006 = (strcmp(getDriverID(), "pm1006") == 0);
 #ifdef USE_SW_UART
     if (!_aqi->begin_UART(
-            _swSerial)) { // connect to the sensor over software serial
+            _swSerial, // connect to the sensor over software serial
+            is_pm1006)) {
       return false;
     }
 #else
     if (!_aqi->begin_UART(
-            _hwSerial)) { // connect to the sensor over hardware serial
+            _hwSerial, // connect to the sensor over hardware serial
+            is_pm1006)) {
       return false;
     }
 #endif
@@ -185,8 +188,8 @@ public:
     uint8_t mqttBuffer[512] = {0};
     pb_ostream_t ostream =
         pb_ostream_from_buffer(mqttBuffer, sizeof(mqttBuffer));
-    if (!pb_encode(&ostream, wippersnapper_signal_v1_UARTResponse_fields,
-                   &msgUARTResponse)) {
+    if (!ws_pb_encode(&ostream, wippersnapper_signal_v1_UARTResponse_fields,
+                      &msgUARTResponse)) {
       Serial.println("[ERROR, UART]: Unable to encode device response!");
       return;
     }

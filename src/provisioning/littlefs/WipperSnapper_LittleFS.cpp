@@ -17,7 +17,11 @@
     defined(ARDUINO_ADAFRUIT_ITSYBITSY_ESP32) ||                               \
     defined(ARDUINO_ADAFRUIT_FEATHER_ESP32_V2) ||                              \
     defined(ARDUINO_ADAFRUIT_QTPY_ESP32_PICO) ||                               \
-    defined(ARDUINO_ADAFRUIT_QTPY_ESP32C3)
+    defined(ARDUINO_ESP32C3_DEV) || defined(ARDUINO_SPARKLEMOTION_ESP32) ||    \
+    defined(ARDUINO_SPARKLEMOTIONMINI_ESP32) ||                                \
+    defined(ARDUINO_SPARKLEMOTIONSTICK_ESP32) ||                               \
+    defined(ARDUINO_ADAFRUIT_QTPY_ESP32C3) ||                                  \
+    defined(ARDUINO_ADAFRUIT_FEATHER_ESP32C6) || defined(ARDUINO_ESP32C5_DEV)
 #include "WipperSnapper_LittleFS.h"
 
 /**************************************************************************/
@@ -27,6 +31,14 @@
 */
 /**************************************************************************/
 WipperSnapper_LittleFS::WipperSnapper_LittleFS() {
+#if PRINT_DEPENDENCIES
+  // Print project build dependencies
+  WS_DEBUG_PRINTLN("Build Dependencies:");
+  WS_DEBUG_PRINTLN("*********************");
+  WS_DEBUG_PRINTLN(project_dependencies);
+  WS_DEBUG_PRINTLN("*********************");
+#endif
+
   // Attempt to initialize filesystem
   if (!LittleFS.begin()) {
     setStatusLEDColor(RED);
@@ -67,6 +79,49 @@ void WipperSnapper_LittleFS::parseSecrets() {
     fsHalt(String("ERROR: deserializeJson() failed with code ") +
            error.c_str());
   }
+  if (doc.containsKey("network_type_wifi")) {
+    // set default network config
+    convertFromJson(doc["network_type_wifi"], WS._config.network);
+
+    if (!doc["network_type_wifi"].containsKey("alternative_networks")) {
+      // do nothing extra, we already have the only network
+      WS_DEBUG_PRINTLN("Found single wifi network in secrets.json");
+
+    } else if (doc["network_type_wifi"]["alternative_networks"]
+                   .is<JsonArray>()) {
+      WS_DEBUG_PRINTLN("Found multiple wifi networks in secrets.json");
+      // Parse network credentials from array in secrets
+      JsonArray altnetworks = doc["network_type_wifi"]["alternative_networks"];
+      int8_t altNetworkCount = (int8_t)altnetworks.size();
+      WS_DEBUG_PRINT("Network count: ");
+      WS_DEBUG_PRINTLNVAR(altNetworkCount);
+      if (altNetworkCount == 0) {
+        fsHalt("ERROR: No alternative network entries found under "
+               "network_type_wifi.alternative_networks in secrets.json!");
+      }
+      // check if over 3, warn user and take first three
+      for (int i = 0; i < altNetworkCount; i++) {
+        if (i >= 3) {
+          WS_DEBUG_PRINT("WARNING: More than 3 networks in secrets.json, "
+                         "only the first 3 will be used. Not using ");
+          WS_DEBUG_PRINTLNVAR(
+              altnetworks[i]["network_ssid"].as<const char *>());
+          break;
+        }
+        convertFromJson(altnetworks[i], WS._multiNetworks[i]);
+        WS_DEBUG_PRINT("Added SSID: ");
+        WS_DEBUG_PRINTLNVAR(WS._multiNetworks[i].ssid);
+        WS_DEBUG_PRINT("PASS: ");
+        WS_DEBUG_PRINTLNVAR(WS._multiNetworks[i].pass);
+      }
+      WS._isWiFiMulti = true;
+    } else {
+      fsHalt("ERROR: Unrecognised value type for "
+             "network_type_wifi.alternative_networks in secrets.json!");
+    }
+  } else {
+    fsHalt("ERROR: Could not find network_type_wifi in secrets.json!");
+  }
 
   // Extract a config struct from the JSON document
   WS._config = doc.as<secretsConfig>();
@@ -86,6 +141,12 @@ void WipperSnapper_LittleFS::parseSecrets() {
            "credentials!\n");
   }
 
+  // specify type of value for json key, by using the |operator to include
+  // a typed default value equivalent of with .as<float> w/ default value
+  // https://arduinojson.org/v7/api/jsonvariant/or/
+  WS._config.status_pixel_brightness =
+      doc["status_pixel_brightness"] | (float)STATUS_PIXEL_BRIGHTNESS_DEFAULT;
+
   // Close the file
   secretsFile.close();
 
@@ -104,7 +165,7 @@ void WipperSnapper_LittleFS::fsHalt(String msg) {
   statusLEDSolid(WS_LED_STATUS_FS_WRITE);
   while (1) {
     WS_DEBUG_PRINTLN("Fatal Error: Halted execution!");
-    WS_DEBUG_PRINTLN(msg.c_str());
+    WS_DEBUG_PRINTLNVAR(msg.c_str());
     delay(1000);
     yield();
   }
