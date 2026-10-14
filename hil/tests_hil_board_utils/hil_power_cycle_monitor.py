@@ -2,9 +2,9 @@
 """Power-cycle a HIL board's hub port, attach to its serial port when it
 re-enumerates, and check that it prints the expected boot banner.
 
-    python hil_power_cycle_monitor.py
-    python hil_power_cycle_monitor.py -timeout 30 -o logs/boot.serial.log
-    python hil_power_cycle_monitor.py -board feather_esp32_v2 -reset
+    python tests_hil_board_utils/hil_power_cycle_monitor.py
+    python tests_hil_board_utils/hil_power_cycle_monitor.py -timeout 30 -o logs/boot.serial.log
+    python tests_hil_board_utils/hil_power_cycle_monitor.py -board feather_esp32_v2 -reset
 
 Each BANNER line must appear, in order, as a whole line. Exits 0 if all
 do, 1 otherwise; the capture is written to -o either way.
@@ -22,9 +22,11 @@ import sys
 import time
 from pathlib import Path
 
-import hil_board_utils as hbu
+HIL_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(HIL_DIR))
+import hil_board_utils as hbu  # noqa: E402
 
-DEFAULT_BOARDS = Path(__file__).with_name("hil-boards.json")
+DEFAULT_BOARDS = HIL_DIR / "hil-boards.json"
 
 BANNER = [
     "Adafruit.io WipperSnapper",
