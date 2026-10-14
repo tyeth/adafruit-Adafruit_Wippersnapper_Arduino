@@ -20,20 +20,32 @@ Library:
                               combined_bin="firmware.combined.bin",
                               fs_image="output.bin")
 
+    port = hil_board_utils.find_port(board_entry)
+    with hil_board_utils.SerialMonitor(port) as mon:
+        mon.reset()
+        mon.expect(r"^Adafruit.io WipperSnapper$", timeout=20)
+        mon.expect(r"^Board ID: feather-esp32-v2$")
+        mon.assert_none(r"Guru Meditation", duration=5)
+    mon.dump("logs/test.serial.log")
+
 All library functions raise HilBoardUtilsError subclasses instead of exiting.
 """
 
 import argparse
 import hashlib
 import json
+import logging
+import os
 import re
 import shutil
 import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 # ESP32 flash geometry: 4 KB erase sectors, 256-byte write pages.
@@ -103,6 +115,18 @@ class PortError(HilBoardUtilsError):
 
 class UhubctlError(HilBoardUtilsError):
     pass
+
+
+class SerialError(HilBoardUtilsError):
+    pass
+
+
+class SerialTimeout(SerialError, AssertionError):
+    """expect() saw no matching line; a test failure."""
+
+
+class SerialUnexpectedError(SerialError, AssertionError):
+    """assert_none() saw a matching line; a test failure."""
 
 
 # --- Partition table ------------------------------------------------------
@@ -357,7 +381,10 @@ def esp_create_image(tool, secrets_path, size, output):
     by listing the image. Returns the listing."""
     geometry = esp_geometry_args(size)
     with tempfile.TemporaryDirectory() as pack_dir:
-        shutil.copy(secrets_path, Path(pack_dir) / SECRETS_FILENAME)
+        try:
+            shutil.copy(secrets_path, Path(pack_dir) / SECRETS_FILENAME)
+        except OSError as e:
+            raise SecretsError(f"cannot read secrets file: {e}") from e
         run_mklittlefs(tool, ["-c", pack_dir, *geometry, str(output)])
 
     listing = run_mklittlefs(tool, ["-l", *geometry, str(output)])
@@ -649,7 +676,7 @@ def _power_cycle(hub, port, delay=2, uhubctl=None, sudo=True):
     return run_uhubctl(uhubctl_args(hub, port, "cycle", delay), uhubctl, sudo)
 
 
-def _power_cycle_board(entry, delay=2, uhubctl=None, sudo=True):
+def power_cycle_board(entry, delay=2, uhubctl=None, sudo=True):
     """Power-cycle the board entry's location and forget its cached port."""
     validate_board_entry(entry)
     clear_port(entry["board"])
@@ -657,16 +684,328 @@ def _power_cycle_board(entry, delay=2, uhubctl=None, sudo=True):
     _power_cycle(loc["hub"], loc["port"], delay, uhubctl, sudo)
 
 
-def _wait_for_port(entry, timeout=15, interval=0.5):
-    """Poll until the board's serial port re-enumerates; return it."""
+def wait_for_port(entry, timeout=15, interval=0.5):
+    """Poll until the board's serial port re-enumerates and is usable; return it.
+
+    The tty appears before udev has given it its group (e.g. dialout), so
+    wait until it is readable and writable too.
+    """
     deadline = time.monotonic() + timeout
     while True:
         try:
-            return find_port(entry, refresh=True)
+            port = find_port(entry, refresh=True)
+            if os.access(port, os.R_OK | os.W_OK):
+                return port
+            if time.monotonic() >= deadline:
+                raise PortError(f"board '{entry['board']}': no permission to open {port}")
         except PortError:
             if time.monotonic() >= deadline:
                 raise
         time.sleep(interval)
+
+
+# --- Serial monitor -------------------------------------------------------
+
+SERIAL_BAUD = 115200
+# Read timeout: how long the reader thread blocks before checking for close().
+SERIAL_READ_TIMEOUT = 0.05
+# A run of bytes this long with no newline is split off as its own line, so
+# garbage (e.g. a wrong baud rate) can't grow the pending line forever.
+SERIAL_MAX_LINE = 4096
+# ANSI color codes (ESP-IDF log colors), stripped so they can't break anchors.
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+serial_log = logging.getLogger("hil.serial")
+
+
+@dataclass(frozen=True)
+class SerialLine:
+    index: int
+    time: float  # time.time() when the line's first byte arrived
+    text: str    # decoded, without the line ending or ANSI color codes
+
+
+class SerialMonitor:
+    """Capture a board's serial output, as lines, on a background thread.
+
+    Lifecycle in a function-scoped pytest fixture:
+
+        mon = SerialMonitor(port)    # opens the port; the board keeps running
+        mon.reset()                  # boot under observation
+        yield mon                    # test calls expect / mark / assert_none
+        mon.close()                  # stop the thread, release the port
+        mon.dump(log_dir / f"{request.node.name}.serial.log")
+
+    Matching:
+        Patterns are str regexes (or compiled str patterns), searched one
+        complete line at a time with re.search, so ^ and $ anchor to the
+        line. A line counts once its '\\n' arrives; '\\r' and ANSI color
+        codes are removed. A pattern can't span lines.
+
+    Positions:
+        Positions are line indices. mark() returns the index the next
+        complete line will get. expect() searches forward from a cursor that
+        only moves forward: past each match, and to the boot start on
+        reset(). assert_none() defaults to the boot start.
+
+    Failures:
+        expect() and assert_none() raise SerialTimeout/SerialUnexpectedError,
+        which are AssertionErrors, so pytest reports them as test failures.
+        A port that can't be opened or drops (e.g. the board was power-cycled)
+        raises SerialError, reported as an error. The monitor doesn't
+        reconnect: open a new one once the port is back.
+
+    Each line is also logged at INFO on the 'hil.serial' logger, so pytest
+    shows it under "Captured log" on failure (or live with --log-cli-level=INFO).
+    """
+
+    def __init__(self, port, baud=SERIAL_BAUD):
+        try:
+            import serial
+        except ImportError as e:
+            raise SerialError("pyserial is required (pip install pyserial)") from e
+        self.port = str(port)
+        self._lines = []
+        self._partial = bytearray()
+        self._partial_time = 0.0
+        self._cursor = 0
+        self._boot = 0
+        self._epoch = 0  # bumped by reset() to drop reads that started before it
+        self._read_epoch = 0  # epoch of the reader's current read
+        self._error = None
+        self._closed = False
+        self._cond = threading.Condition()
+        self._stop = threading.Event()
+
+        ser = serial.Serial()
+        ser.port = self.port
+        ser.baudrate = baud
+        ser.timeout = SERIAL_READ_TIMEOUT
+        ser.exclusive = True  # esptool etc. fail cleanly instead of sharing reads
+        # Opening raises DTR and RTS together; with both asserted the ESP32
+        # auto-reset circuit holds neither EN nor IO0 low, so the board is
+        # left running. Asking for them low here would toggle them one at a
+        # time after open and pulse EN.
+        ser.dtr = True
+        ser.rts = True
+        try:
+            ser.open()
+        except (OSError, ValueError) as e:
+            raise SerialError(f"cannot open {self.port}: {e}") from e
+        self._serial = ser
+        self._reader = threading.Thread(
+            target=self._read_loop, name=f"SerialMonitor({self.port})", daemon=True
+        )
+        self._reader.start()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    # -- capture ------------------------------------------------------------
+
+    def _read_loop(self):
+        ser = self._serial
+        while not self._stop.is_set():
+            with self._cond:
+                epoch = self._read_epoch = self._epoch
+                self._cond.notify_all()
+            try:
+                data = ser.read(ser.in_waiting or 1)
+            except OSError as e:  # includes serial.SerialException
+                with self._cond:
+                    self._error = e
+                    self._cond.notify_all()
+                return
+            if not data:
+                continue
+            with self._cond:
+                if epoch == self._epoch:
+                    self._feed(data, time.time())
+                    self._cond.notify_all()
+
+    def _feed(self, data, now):
+        if not self._partial:
+            self._partial_time = now
+        self._partial += data
+        while (i := self._partial.find(b"\n")) >= 0:
+            self._emit(self._partial[:i], self._partial_time)
+            del self._partial[:i + 1]
+            self._partial_time = now
+        if len(self._partial) >= SERIAL_MAX_LINE:
+            self._emit(self._partial, self._partial_time)
+            self._partial.clear()
+
+    def _emit(self, raw, t):
+        text = ANSI_ESCAPE_RE.sub("", raw.decode(errors="replace")).rstrip("\r")
+        self._lines.append(SerialLine(len(self._lines), t, text))
+        serial_log.info("%s | %s", self.port, text)
+
+    def close(self):
+        """Stop capturing and release the port. A trailing line with no
+        newline is kept. The capture stays readable."""
+        if self._closed:
+            return
+        self._stop.set()
+        self._reader.join()
+        self._serial.close()
+        with self._cond:
+            self._closed = True
+            if self._partial:
+                self._emit(self._partial, self._partial_time)
+                self._partial.clear()
+            self._cond.notify_all()
+
+    # -- board control ------------------------------------------------------
+
+    def reset(self, hold=0.1):
+        """Hard-reset through the USB-serial auto-reset circuit (RTS -> EN,
+        DTR -> IO0) and return the boot start: the index of the boot's first
+        line. The cursor moves there, so the next expect() only sees this
+        boot.
+
+        While EN is held low the chip is silent, so after hold seconds
+        anything still pending is from the previous boot and is dropped.
+        EN is released only once the reader has started a fresh read, so a
+        read begun before the reset can't swallow the boot's first bytes.
+        Needs a USB-UART bridge (CP210x, CH9102, ...); native USB boards
+        don't wire DTR/RTS to EN.
+        """
+        if self._closed:
+            raise SerialError(f"{self.port}: monitor is closed")
+        ser = self._serial
+        try:
+            ser.dtr = False  # IO0 high: boot normally, not into download mode
+            ser.rts = True   # EN low: hold in reset
+            time.sleep(hold)
+            with self._cond:
+                self._epoch += 1
+                ser.reset_input_buffer()
+                self._partial.clear()
+                self._boot = self._cursor = len(self._lines)
+                self._cond.wait_for(
+                    lambda: self._read_epoch == self._epoch or self._error,
+                    timeout=1,
+                )
+            ser.rts = False
+        except OSError as e:
+            raise SerialError(f"{self.port}: reset failed: {e}") from e
+        return self._boot
+
+    # -- matching -----------------------------------------------------------
+
+    def mark(self):
+        """Return the index the next complete line will get."""
+        with self._cond:
+            return len(self._lines)
+
+    @property
+    def boot(self):
+        """Index of the first line of the last reset()'s boot (0 if none)."""
+        return self._boot
+
+    @staticmethod
+    def _compile(pattern):
+        return pattern if isinstance(pattern, re.Pattern) else re.compile(pattern)
+
+    def _search(self, regex, start):
+        for line in self._lines[start:]:
+            m = regex.search(line.text)
+            if m:
+                return line, m
+        return None, None
+
+    def _tail(self, start, count=20):
+        lines = self._lines[start:]
+        shown = [f"  [{l.index}] {l.text}" for l in lines[-count:]]
+        if len(lines) > count:
+            shown.insert(0, f"  ... {len(lines) - count} earlier lines")
+        return "\n".join(shown) if shown else "  (no lines)"
+
+    def _port_error(self):
+        return SerialError(f"{self.port}: serial port lost: {self._error}")
+
+    def expect(self, pattern, timeout=10):
+        """Wait for the first line at or after the cursor that matches
+        pattern, move the cursor past that line, and return the re.Match
+        (the line is m.string). Consecutive expect() calls therefore check
+        order. Raises SerialTimeout, or SerialError if the port drops.
+        """
+        __tracebackhide__ = True
+        regex = self._compile(pattern)
+        deadline = time.monotonic() + timeout
+        with self._cond:
+            start = pos = self._cursor
+            while True:
+                line, m = self._search(regex, pos)
+                if m:
+                    self._cursor = line.index + 1
+                    return m
+                pos = len(self._lines)  # don't rescan lines already checked
+                if self._error:
+                    raise self._port_error()
+                remaining = deadline - time.monotonic()
+                if self._closed or remaining <= 0:
+                    why = "monitor is closed" if self._closed else f"within {timeout:.3g}s"
+                    raise SerialTimeout(
+                        f"{self.port}: no line matched {regex.pattern!r} "
+                        f"({why}); lines from {start}:\n{self._tail(start)}"
+                    )
+                self._cond.wait(remaining)
+
+    def assert_none(self, pattern, since=None, duration=0):
+        """Fail if any line from since (default: the boot start) matches
+        pattern, watching new lines for duration more seconds. Doesn't move
+        the cursor. Raises SerialUnexpectedError, or SerialError if the port
+        drops.
+        """
+        __tracebackhide__ = True
+        regex = self._compile(pattern)
+        deadline = time.monotonic() + duration
+        with self._cond:
+            pos = self._boot if since is None else since
+            while True:
+                line, m = self._search(regex, pos)
+                if m:
+                    raise SerialUnexpectedError(
+                        f"{self.port}: line {line.index} matched {regex.pattern!r}: "
+                        f"{line.text!r}"
+                    )
+                pos = max(pos, len(self._lines))
+                if self._error:
+                    raise self._port_error()
+                remaining = deadline - time.monotonic()
+                if self._closed or remaining <= 0:
+                    return
+                self._cond.wait(remaining)
+
+    # -- output -------------------------------------------------------------
+
+    def lines(self, since=0):
+        """Return the complete lines from index since on."""
+        with self._cond:
+            return self._lines[since:]
+
+    @property
+    def output(self):
+        """All complete lines, joined with newlines."""
+        with self._cond:
+            return "".join(f"{l.text}\n" for l in self._lines)
+
+    def dump(self, path):
+        """Write every line to path, prefixed with the time its first byte
+        arrived. Returns the path."""
+        with self._cond:
+            lines = list(self._lines)
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w") as f:
+            for l in lines:
+                stamp = datetime.fromtimestamp(l.time).strftime("%H:%M:%S.%f")[:-3]
+                f.write(f"[{stamp}] {l.text}\n")
+        return path
 
 
 # --- High-level API -------------------------------------------------------
@@ -681,10 +1020,10 @@ class BuildResult:
 
 def esp_make_littlefs(partitions_path, output, secrets_path=SECRETS_FILENAME,
                       mklittlefs=None):
-    """Validate inputs and build a LittleFS image sized to the fs partition."""
+    """Build a LittleFS image sized to the fs partition. secrets_path is packed
+    as-is (not validated), so tests can build images with bad secrets."""
     part = esp_get_fs_partition(partitions_path)
     tool = find_mklittlefs(mklittlefs)
-    load_secrets(secrets_path)
     listing = esp_create_image(tool, secrets_path, part.size, output)
     return BuildResult(part, Path(output), listing)
 
@@ -711,6 +1050,26 @@ def esp_flash(port, chip, partitions_path, combined_bin, fs_image, esptool=None)
         tool, chip, port,
         [(ESP_COMBINED_OFFSET, combined_bin), (part.offset, fs_image)],
     )
+    output = esp_run_esptool(tool, args)
+    return FlashResult(part, [tool.path, *args], output)
+
+
+def esp_flash_fs(port, chip, partitions_path, fs_image, esptool=None):
+    """Flash only the fs image at its partition offset, leaving firmware intact."""
+    if not port:
+        raise EspFlashError("port is required (e.g. /dev/ttyACM0)")
+    part = esp_get_fs_partition(partitions_path)
+    try:
+        fs_size = Path(fs_image).stat().st_size
+    except OSError as e:
+        raise EspFlashError(f"cannot read image: {e}") from e
+    if fs_size > part.size:
+        raise EspFlashError(
+            f"filesystem image ({fs_size:#x} bytes) is larger than the "
+            f"'{part.label}' partition ({part.size:#x} bytes)"
+        )
+    tool = esp_find_esptool(esptool)
+    args = esp_write_flash_args(tool, chip, port, [(part.offset, fs_image)])
     output = esp_run_esptool(tool, args)
     return FlashResult(part, [tool.path, *args], output)
 
@@ -743,6 +1102,7 @@ def main(argv=None):
         if args.get_offset:
             print(f"{esp_get_fs_offset(args.partitions):#x}", flush=True)
         if args.o is not None:
+            load_secrets(args.secrets)
             result = esp_make_littlefs(args.partitions, args.o, args.secrets,
                                        args.mklittlefs)
             part = result.partition
