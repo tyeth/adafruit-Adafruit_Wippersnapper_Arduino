@@ -37,7 +37,7 @@ class StepTimer:
 
 
 def test_good_secrets_report_io_user(board, firmware, secrets_file, broker_creds,
-                                     flashed_firmware, flashed_fs, serial, power):
+                                     flashed_board, serial, power):
     timer = StepTimer()
     try:
         # --- Arrange ------------------------------------------------------
@@ -47,36 +47,31 @@ def test_good_secrets_report_io_user(board, firmware, secrets_file, broker_creds
             expected_user = broker_creds.username
             assert expected_user
 
-        # 2a. A LittleFS image holding those secrets is built, and
-        # 2b. flashed with the firmware (once per session, by flashed_firmware).
-        timer.record("(2a) build fs image", flashed_firmware.build_s)
-        timer.record("(2b) flash firmware + fs", flashed_firmware.flash_s)
+        # 2a. The whole chip is erased,
+        # 2b. a LittleFS image holding those secrets is built, and
+        # 2c. flashed with the firmware (all by flashed_board).
+        timer.record("(2a) erase chip", flashed_board.erase_s)
+        timer.record("(2b) build fs image", flashed_board.build_s)
+        timer.record("(2c) flash firmware + fs", flashed_board.flash_s)
+        assert flashed_board.secrets_path == secrets_path
         fs_partition = hil_board_utils.esp_get_fs_partition(firmware.partitions)
-        assert flashed_firmware.build.partition == fs_partition
-        assert f"/{hil_board_utils.SECRETS_FILENAME}" in flashed_firmware.build.listing
-        assert flashed_firmware.flash.output.count("Hash of data verified") == 2
+        assert flashed_board.build.partition == fs_partition
+        assert f"/{hil_board_utils.SECRETS_FILENAME}" in flashed_board.build.listing
+        assert flashed_board.flash.output.count("Hash of data verified") == 2
 
-        # 3. The filesystem on the board holds this module's secrets
-        #    (flashed_fs reflashes it only if a previous module changed it).
-        if flashed_fs.flashed:
-            timer.record("(3a) rebuild fs image", flashed_fs.build_s)
-            timer.record("(3b) reflash fs", flashed_fs.flash_s)
-        assert flashed_fs.secrets_path == secrets_path
-        assert flashed_firmware.fs_digest == flashed_fs.digest
-
-        # 4. A serial monitor is attached to the board's port.
-        with timer.step("(4) serial attached"):
+        # 3. A serial monitor is attached to the board's port.
+        with timer.step("(3) serial attached"):
             assert serial.port == board.port
 
         # --- Act ----------------------------------------------------------
-        # 5. Power-cycle the board's hub port and capture the boot once its
+        # 4. Power-cycle the board's hub port and capture the boot once its
         #    serial port is back.
-        with timer.step("(5) power-cycle reset"):
+        with timer.step("(4) power-cycle reset"):
             serial.port_reset(board.entry, timeout=15, **power)
 
         # --- Assert -------------------------------------------------------
-        # 6. The firmware reports the user from secrets.json.
-        with timer.step("(6) expect io user"):
+        # 5. The firmware reports the user from secrets.json.
+        with timer.step("(5) expect io user"):
             serial.expect(rf"^Adafruit\.io User: {re.escape(expected_user)}$",
                           timeout=30)
     finally:
@@ -84,10 +79,11 @@ def test_good_secrets_report_io_user(board, firmware, secrets_file, broker_creds
 
 
 @pytest.mark.parametrize("secrets_name", ["default"], indirect=True)
-def test_default_secrets(board, default_secrets, flashed_fs, serial, power):
+def test_default_secrets(board, default_secrets, flashed_board, serial, power):
     # --- Arrange ------------------------------------------------------
-    # 1. The board's filesystem holds the placeholder secrets.
-    assert json.loads(flashed_fs.secrets_path.read_text()) == default_secrets
+    # 1. The chip was erased and flashed with the firmware and the
+    #    placeholder secrets.
+    assert json.loads(flashed_board.secrets_path.read_text()) == default_secrets
 
     # --- Act ----------------------------------------------------------
     # 2. Power-cycle the board's hub port and capture the boot.
@@ -103,11 +99,12 @@ def test_default_secrets(board, default_secrets, flashed_fs, serial, power):
 
 @pytest.mark.parametrize("secrets_name", ["no_network_type_wifi"], indirect=True)
 def test_secrets_structure_no_network_type_wifi(board, generated_secrets,
-                                                secrets_name, flashed_fs, serial,
-                                                power):
+                                                secrets_name, flashed_board,
+                                                serial, power):
     # --- Arrange ------------------------------------------------------
-    # 1. The board's filesystem holds secrets without network_type_wifi.
-    assert (json.loads(flashed_fs.secrets_path.read_text())
+    # 1. The chip was erased and flashed with the firmware and secrets
+    #    without network_type_wifi.
+    assert (json.loads(flashed_board.secrets_path.read_text())
             == generated_secrets[secrets_name])
 
     # --- Act ----------------------------------------------------------
@@ -129,12 +126,12 @@ def test_secrets_structure_no_network_type_wifi(board, generated_secrets,
 @pytest.mark.parametrize("secrets_name", ["empty_alternative_networks"],
                          indirect=True)
 def test_secrets_structure_empty_alternative_networks(board, generated_secrets,
-                                                      secrets_name, flashed_fs,
+                                                      secrets_name, flashed_board,
                                                       serial, power):
     # --- Arrange ------------------------------------------------------
-    # 1. The board's filesystem holds secrets with an empty
-    #    alternative_networks list.
-    assert (json.loads(flashed_fs.secrets_path.read_text())
+    # 1. The chip was erased and flashed with the firmware and secrets
+    #    with an empty alternative_networks list.
+    assert (json.loads(flashed_board.secrets_path.read_text())
             == generated_secrets[secrets_name])
 
     # --- Act ----------------------------------------------------------
@@ -157,12 +154,12 @@ def test_secrets_structure_empty_alternative_networks(board, generated_secrets,
 @pytest.mark.parametrize("secrets_name", ["string_alternative_networks"],
                          indirect=True)
 def test_secrets_structure_string_alternative_networks(board, generated_secrets,
-                                                       secrets_name, flashed_fs,
+                                                       secrets_name, flashed_board,
                                                        serial, power):
     # --- Arrange ------------------------------------------------------
-    # 1. The board's filesystem holds secrets whose alternative_networks
-    #    is a string.
-    assert (json.loads(flashed_fs.secrets_path.read_text())
+    # 1. The chip was erased and flashed with the firmware and secrets
+    #    whose alternative_networks is a string.
+    assert (json.loads(flashed_board.secrets_path.read_text())
             == generated_secrets[secrets_name])
 
     # --- Act ----------------------------------------------------------
@@ -185,12 +182,12 @@ def test_secrets_structure_string_alternative_networks(board, generated_secrets,
 @pytest.mark.parametrize("secrets_name", ["object_alternative_networks"],
                          indirect=True)
 def test_secrets_structure_object_alternative_networks(board, generated_secrets,
-                                                       secrets_name, flashed_fs,
+                                                       secrets_name, flashed_board,
                                                        serial, power):
     # --- Arrange ------------------------------------------------------
-    # 1. The board's filesystem holds secrets whose alternative_networks
-    #    is an object.
-    assert (json.loads(flashed_fs.secrets_path.read_text())
+    # 1. The chip was erased and flashed with the firmware and secrets
+    #    whose alternative_networks is an object.
+    assert (json.loads(flashed_board.secrets_path.read_text())
             == generated_secrets[secrets_name])
 
     # --- Act ----------------------------------------------------------

@@ -7,18 +7,21 @@ board file (hil-boards.json by default).
 
 Fixture chain:
 
-    board (session) -> flashed_firmware (session) -> flashed_fs (module) -> serial (function)
+    board (session) -> flashed_board (function) -> serial (function)
+
+Every test starts from a clean chip: flashed_board erases the whole flash
+(firmware, NVS, filesystem), then flashes the firmware and a LittleFS image
+holding the test's secrets scenario, before the test body runs.
 
 Secrets come from a directory of <scenario>.secrets.json files (--secrets-dir,
-else $HIL_SECRETS_DIR, else ~/hil-secrets). good.secrets.json is required: it
-is flashed with the firmware and is the source of broker_creds and
-network_creds. Other scenarios may be invalid on purpose, so they're packed
-byte for byte and never validated. The scenarios in generated_secrets (e.g.
-"default", the firmware's placeholder secrets) aren't read from the dir:
-they're written to a temp file. A module picks a scenario by overriding
-secrets_name:
+else $HIL_SECRETS_DIR, else ~/hil-secrets). good.secrets.json is the default
+scenario and the source of broker_creds and network_creds. Other scenarios
+may be invalid on purpose, so they're packed byte for byte and never
+validated. The scenarios in generated_secrets (e.g. "default", the firmware's
+placeholder secrets) aren't read from the dir: they're written to a temp
+file. A module picks a scenario by overriding secrets_name:
 
-    @pytest.fixture(scope="module")
+    @pytest.fixture
     def secrets_name():
         return "bad_wifi"
 
@@ -28,7 +31,6 @@ and a single test by parametrizing it indirectly:
 """
 
 import copy
-import hashlib
 import json
 import logging
 import os
@@ -270,39 +272,47 @@ def network_creds(good_secrets):
 # --- Flashing -------------------------------------------------------------
 
 
-@dataclass
+@pytest.fixture
+def secrets_name(request):
+    """The secrets scenario the test boots with: the test's indirect
+    parameter, else the good secrets."""
+    return getattr(request, "param", GOOD_SECRETS)
+
+
+@pytest.fixture
+def secrets_path(request, secrets_name, secrets_file, tmp_path):
+    """The file for secrets_name: written to a temp file if it's one of
+    generated_secrets, else <secrets_dir>/<secrets_name>.secrets.json."""
+    generated = request.getfixturevalue("generated_secrets")
+    if secrets_name not in generated:
+        return secrets_file(secrets_name)
+    path = tmp_path / f"{secrets_name}{SECRETS_SUFFIX}"
+    path.write_text(json.dumps(generated[secrets_name], indent=4))
+    return path
+
+
+@dataclass(frozen=True)
 class FlashState:
-    """What the session flashed. fs_digest tracks the filesystem's current
-    contents (None if unknown, e.g. after a failed flash)."""
-    board: Board
-    firmware: Firmware
+    """What flashed_board did to the board before the test."""
+    secrets_path: Path
+    erase: hil_board_utils.EraseResult
     build: hil_board_utils.BuildResult
     flash: hil_board_utils.FlashResult
-    fs_digest: str
+    erase_s: float  # seconds to erase the chip
     build_s: float  # seconds to build the LittleFS image
     flash_s: float  # seconds to flash the firmware and image
 
 
-@dataclass(frozen=True)
-class FsState:
-    secrets_path: Path
-    digest: str
-    flashed: bool  # False if the filesystem already held these secrets
-    build_s: float = 0.0  # seconds to build the image (0 if not flashed)
-    flash_s: float = 0.0  # seconds to flash it (0 if not flashed)
-
-
-def _digest(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-
-
-@pytest.fixture(scope="session")
-def flashed_firmware(board, firmware, secrets_file, good_secrets, tmp_path_factory):
-    """Flash the firmware and a LittleFS image with the good secrets, once."""
-    secrets_path = secrets_file(GOOD_SECRETS)
-    image = tmp_path_factory.mktemp("fs") / "littlefs.bin"
+@pytest.fixture
+def flashed_board(board, firmware, secrets_path, tmp_path):
+    """Erase the whole chip, then flash the firmware and a LittleFS image
+    holding secrets_path. The file is packed as-is, valid or not."""
+    image = tmp_path / "littlefs.bin"
     try:
         start = time.perf_counter()
+        erase = hil_board_utils.esp_erase_flash(board.port, board.chip,
+                                                baud=board.flash_baud)
+        erased = time.perf_counter()
         build = hil_board_utils.esp_make_littlefs(firmware.partitions, image,
                                                   secrets_path)
         built = time.perf_counter()
@@ -312,66 +322,18 @@ def flashed_firmware(board, firmware, secrets_file, good_secrets, tmp_path_facto
         flashed = time.perf_counter()
     except hil_board_utils.HilBoardUtilsError as e:
         pytest.fail(str(e), pytrace=False)
-    log.info("flashed %s and %s (%s) to %s: build %.2fs, flash %.2fs",
-             firmware.combined.name, secrets_path.name, build.partition.label,
-             board.port, built - start, flashed - built)
-    return FlashState(board, firmware, build, flash, _digest(secrets_path),
-                      build_s=built - start, flash_s=flashed - built)
-
-
-@pytest.fixture(scope="module")
-def secrets_name(request):
-    """The secrets scenario this module's tests boot with, or a test's
-    indirect parameter."""
-    return getattr(request, "param", GOOD_SECRETS)
-
-
-@pytest.fixture(scope="module")
-def secrets_path(request, secrets_name, secrets_file, tmp_path_factory):
-    """The file for secrets_name: written to a temp file if it's one of
-    generated_secrets, else <secrets_dir>/<secrets_name>.secrets.json."""
-    generated = request.getfixturevalue("generated_secrets")
-    if secrets_name not in generated:
-        return secrets_file(secrets_name)
-    path = tmp_path_factory.mktemp("secrets") / f"{secrets_name}{SECRETS_SUFFIX}"
-    path.write_text(json.dumps(generated[secrets_name], indent=4))
-    return path
-
-
-@pytest.fixture(scope="module")
-def flashed_fs(flashed_firmware, secrets_path, tmp_path_factory):
-    """Make the board's filesystem hold secrets_path, flashing it only if it
-    differs from what's there. The file is packed as-is, valid or not."""
-    state = flashed_firmware
-    digest = _digest(secrets_path)
-    if digest == state.fs_digest:
-        log.info("fs unchanged (%s), not flashing", secrets_path.name)
-        return FsState(secrets_path, digest, flashed=False)
-
-    image = tmp_path_factory.mktemp("fs") / "littlefs.bin"
-    state.fs_digest = None
-    try:
-        start = time.perf_counter()
-        hil_board_utils.esp_make_littlefs(state.firmware.partitions, image, secrets_path)
-        built = time.perf_counter()
-        hil_board_utils.esp_flash_fs(state.board.port, state.board.chip,
-                                     state.firmware.partitions, image,
-                                     baud=state.board.flash_baud)
-        flashed = time.perf_counter()
-    except hil_board_utils.HilBoardUtilsError as e:
-        pytest.fail(str(e), pytrace=False)
-    state.fs_digest = digest
-    log.info("flashed fs with %s: build %.2fs, flash %.2fs", secrets_path.name,
-             built - start, flashed - built)
-    return FsState(secrets_path, digest, flashed=True,
-                   build_s=built - start, flash_s=flashed - built)
+    log.info("erased %s, flashed %s and %s (%s): erase %.2fs, build %.2fs, "
+             "flash %.2fs", board.port, firmware.combined.name, secrets_path.name,
+             build.partition.label, erased - start, built - erased, flashed - built)
+    return FlashState(secrets_path, erase, build, flash, erase_s=erased - start,
+                      build_s=built - erased, flash_s=flashed - built)
 
 
 # --- Serial ---------------------------------------------------------------
 
 
 @pytest.fixture
-def serial(board, flashed_fs, request, pytestconfig, tmp_path):
+def serial(board, flashed_board, request, pytestconfig, tmp_path):
     """A SerialMonitor on the board's port. It doesn't reset the board; the
     test does (board_reset() or port_reset()), as its Act step. The capture
     is dumped when the test ends."""

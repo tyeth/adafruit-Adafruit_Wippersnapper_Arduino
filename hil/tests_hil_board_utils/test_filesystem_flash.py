@@ -66,6 +66,7 @@ def test_esptool_found():
     tool = hbu.esp_find_esptool()
     assert tool.version
     assert tool.write_flash_command in ("write-flash", "write_flash")
+    assert tool.erase_flash_command in ("erase-flash", "erase_flash")
 
 
 # --- Flashing (board needed) ----------------------------------------------
@@ -108,6 +109,27 @@ def test_flash_firmware_and_fs(firmware, chip, port, make_secrets, open_monitor,
         f"{hbu.ESP_COMBINED_OFFSET:#x}", str(firmware.combined),
         f"{build.partition.offset:#x}", str(image),
     ]
+    assert result.output.count(HASH_VERIFIED) == 2
+    boot_and_check(open_monitor, port, secrets, banner=True)
+
+
+@pytest.mark.hardware
+def test_erase_then_flash(firmware, chip, port, make_secrets, open_monitor,
+                          tmp_path):
+    erase = hbu.esp_erase_flash(port, chip)
+
+    assert erase.command[-1] == hbu.esp_find_esptool().erase_flash_command
+    # With the bootloader gone, the ROM finds no image to boot.
+    mon = open_monitor(port)
+    mon.board_reset()
+    mon.expect(r"invalid header: 0xffffffff", timeout=5)
+    mon.close()
+
+    # Flashing the firmware and fs brings it back.
+    secrets_path, secrets = make_secrets()
+    image = tmp_path / "littlefs.bin"
+    hbu.esp_make_littlefs(firmware.partitions, image, secrets_path)
+    result = hbu.esp_flash(port, chip, firmware.partitions, firmware.combined, image)
     assert result.output.count(HASH_VERIFIED) == 2
     boot_and_check(open_monitor, port, secrets, banner=True)
 

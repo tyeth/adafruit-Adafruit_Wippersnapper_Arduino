@@ -15,6 +15,7 @@ Library:
                                               secrets_path="secrets.json")
     result.partition.offset, result.partition.size, result.listing
 
+    hil_board_utils.esp_erase_flash(port="/dev/ttyACM0", chip="esp32")
     hil_board_utils.esp_flash(port="/dev/ttyACM0", chip="esp32",
                               partitions_path="partitions.bin",
                               combined_bin="firmware.combined.bin",
@@ -404,10 +405,18 @@ class Esptool:
     version: str
 
     @property
+    def major(self):
+        return int(self.version.split(".")[0]) if self.version[:1].isdigit() else 0
+
+    @property
     def write_flash_command(self):
         # esptool v5 renamed write_flash to write-flash
-        major = int(self.version.split(".")[0]) if self.version[:1].isdigit() else 0
-        return "write-flash" if major >= 5 else "write_flash"
+        return "write-flash" if self.major >= 5 else "write_flash"
+
+    @property
+    def erase_flash_command(self):
+        # and erase_flash to erase-flash
+        return "erase-flash" if self.major >= 5 else "erase_flash"
 
 
 def esp_esptool_version(path):
@@ -488,16 +497,25 @@ def esp_check_flash_layout(combined_bin, fs_image, partition):
         )
 
 
-def esp_write_flash_args(esptool, chip, port, images, baud=None):
-    """Build esptool args; images is a list of (offset, path) pairs. baud is
-    the flashing baud rate (default: esptool's own, 115200)."""
+def esp_connect_args(chip, port, baud=None):
+    """esptool's global args. baud is the flashing baud rate (default:
+    esptool's own, 115200)."""
     args = ["--chip", chip, "--port", str(port)]
     if baud is not None:
         args += ["--baud", str(baud)]
-    args.append(esptool.write_flash_command)
+    return args
+
+
+def esp_write_flash_args(esptool, chip, port, images, baud=None):
+    """Build esptool args; images is a list of (offset, path) pairs."""
+    args = [*esp_connect_args(chip, port, baud), esptool.write_flash_command]
     for offset, path in images:
         args += [f"{offset:#x}", str(path)]
     return args
+
+
+def esp_erase_flash_args(esptool, chip, port, baud=None):
+    return [*esp_connect_args(chip, port, baud), esptool.erase_flash_command]
 
 
 def esp_run_esptool(esptool, args):
@@ -1083,6 +1101,24 @@ class FlashResult:
     partition: EspPartition
     command: list
     output: str
+
+
+@dataclass(frozen=True)
+class EraseResult:
+    command: list
+    output: str
+
+
+def esp_erase_flash(port, chip, esptool=None, baud=None):
+    """Erase the whole flash chip: bootloader, firmware, NVS, filesystem and
+    all. The board won't boot until it's flashed again."""
+    if not port:
+        raise EspFlashError("port is required (e.g. /dev/ttyACM0)")
+    esp_bootloader_offset(chip)  # rejects unknown chips
+    tool = esp_find_esptool(esptool)
+    args = esp_erase_flash_args(tool, chip, port, baud)
+    output = esp_run_esptool(tool, args)
+    return EraseResult([tool.path, *args], output)
 
 
 def esp_flash(port, chip, partitions_path, combined_bin, fs_image, esptool=None,
