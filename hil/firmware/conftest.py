@@ -19,7 +19,9 @@ scenario and the source of broker_creds and network_creds. Other scenarios
 may be invalid on purpose, so they're packed byte for byte and never
 validated. The scenarios in generated_secrets (e.g. "default", the firmware's
 placeholder secrets) aren't read from the dir: they're written to a temp
-file. A module picks a scenario by overriding secrets_name:
+file. Two scenarios have no secrets file at all: "no_secrets_file" flashes
+an empty LittleFS image, and "no_fs_image" flashes no image, leaving the fs
+partition erased. A module picks a scenario by overriding secrets_name:
 
     @pytest.fixture
     def secrets_name():
@@ -28,6 +30,16 @@ file. A module picks a scenario by overriding secrets_name:
 and a single test by parametrizing it indirectly:
 
     @pytest.mark.parametrize("secrets_name", ["default"], indirect=True)
+
+The board entry picks which tests run on it, with selectors relative to
+this dir: a folder ("provisioning/"), a file ("provisioning/test_secrets.py")
+or a test ("provisioning/test_secrets.py::test_default_secrets"):
+
+    "run_tests": ["provisioning/"],   # only these run; omit to run all
+    "skip_tests": []                  # these are reported as skipped
+
+Tests outside run_tests are deselected. Selection on the command line
+(paths, -k) narrows this further; it can't widen it.
 """
 
 import copy
@@ -41,7 +53,8 @@ from pathlib import Path
 
 import pytest
 
-HIL_DIR = Path(__file__).resolve().parents[1]
+FIRMWARE_DIR = Path(__file__).resolve().parent
+HIL_DIR = FIRMWARE_DIR.parent
 sys.path.insert(0, str(HIL_DIR))
 import hil_board_utils  # noqa: E402
 
@@ -51,6 +64,8 @@ SECRETS_DIR_ENV = "HIL_SECRETS_DIR"
 SECRETS_SUFFIX = ".secrets.json"
 GOOD_SECRETS = "good"
 DEFAULT_SECRETS = "default"
+NO_SECRETS_FILE = "no_secrets_file"  # an empty LittleFS image
+NO_FS_IMAGE = "no_fs_image"  # no image: the fs partition stays erased
 
 log = logging.getLogger("hil.firmware")
 
@@ -107,6 +122,58 @@ def load_board_entry(path, board=None):
     if not matches:
         pytest.fail(f"board '{board}' not found in {path}", pytrace=False)
     return matches[0]
+
+
+def _test_selectors(entry, key):
+    """The board entry's run_tests/skip_tests list, with trailing '/'
+    stripped, or None if it isn't set."""
+    selectors = entry.get(key)
+    if selectors is None:
+        return None
+    if (not isinstance(selectors, list)
+            or not all(isinstance(s, str) and s.strip("/") for s in selectors)):
+        raise pytest.UsageError(
+            f"board '{entry.get('board')}': '{key}' must be a list of test paths, "
+            f"e.g. [\"provisioning/\"], got {selectors!r}")
+    return [s.rstrip("/") for s in selectors]
+
+
+def _matches(test_id, selectors):
+    """Whether test_id (relative to FIRMWARE_DIR) is in, or is, one of
+    selectors: a folder, a file, or a test with or without its params."""
+    return any(test_id == s or test_id.startswith((s + "/", s + "::", s + "["))
+               for s in selectors)
+
+
+def pytest_collection_modifyitems(config, items):
+    """Apply the board entry's run_tests and skip_tests to the tests under
+    FIRMWARE_DIR."""
+    try:
+        entry = load_board_entry(config.getoption("boards"),
+                                 config.getoption("board"))
+    except pytest.fail.Exception as e:
+        raise pytest.UsageError(str(e)) from None
+    run = _test_selectors(entry, "run_tests")
+    skip = _test_selectors(entry, "skip_tests")
+    selected, deselected = [], []
+    for item in items:
+        path = Path(item.path)
+        if not path.is_relative_to(FIRMWARE_DIR):
+            selected.append(item)
+            continue
+        test_id = path.relative_to(FIRMWARE_DIR).as_posix()
+        if "::" in item.nodeid:
+            test_id += "::" + item.nodeid.split("::", 1)[1]
+        if run is not None and not _matches(test_id, run):
+            deselected.append(item)
+            continue
+        if skip and _matches(test_id, skip):
+            item.add_marker(pytest.mark.skip(
+                reason=f"in skip_tests for board '{entry['board']}'"))
+        selected.append(item)
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+        items[:] = selected
 
 
 @pytest.fixture(scope="session")
@@ -281,8 +348,11 @@ def secrets_name(request):
 
 @pytest.fixture
 def secrets_path(request, secrets_name, secrets_file, tmp_path):
-    """The file for secrets_name: written to a temp file if it's one of
-    generated_secrets, else <secrets_dir>/<secrets_name>.secrets.json."""
+    """The file for secrets_name: None for no_secrets_file and no_fs_image,
+    written to a temp file if it's one of generated_secrets, else
+    <secrets_dir>/<secrets_name>.secrets.json."""
+    if secrets_name in (NO_SECRETS_FILE, NO_FS_IMAGE):
+        return None
     generated = request.getfixturevalue("generated_secrets")
     if secrets_name not in generated:
         return secrets_file(secrets_name)
@@ -294,9 +364,9 @@ def secrets_path(request, secrets_name, secrets_file, tmp_path):
 @dataclass(frozen=True)
 class FlashState:
     """What flashed_board did to the board before the test."""
-    secrets_path: Path
+    secrets_path: Path  # None if no secrets file was packed
     erase: hil_board_utils.EraseResult
-    build: hil_board_utils.BuildResult
+    build: hil_board_utils.BuildResult  # None if no fs image was flashed
     flash: hil_board_utils.FlashResult
     erase_s: float  # seconds to erase the chip
     build_s: float  # seconds to build the LittleFS image
@@ -304,17 +374,20 @@ class FlashState:
 
 
 @pytest.fixture
-def flashed_board(board, firmware, secrets_path, tmp_path):
+def flashed_board(board, firmware, secrets_name, secrets_path, tmp_path):
     """Erase the whole chip, then flash the firmware and a LittleFS image
-    holding secrets_path. The file is packed as-is, valid or not."""
-    image = tmp_path / "littlefs.bin"
+    holding secrets_path. The file is packed as-is, valid or not. For
+    no_fs_image only the firmware is flashed."""
+    image = None if secrets_name == NO_FS_IMAGE else tmp_path / "littlefs.bin"
+    build = None
     try:
         start = time.perf_counter()
         erase = hil_board_utils.esp_erase_flash(board.port, board.chip,
                                                 baud=board.flash_baud)
         erased = time.perf_counter()
-        build = hil_board_utils.esp_make_littlefs(firmware.partitions, image,
-                                                  secrets_path)
+        if image is not None:
+            build = hil_board_utils.esp_make_littlefs(firmware.partitions, image,
+                                                      secrets_path)
         built = time.perf_counter()
         flash = hil_board_utils.esp_flash(board.port, board.chip, firmware.partitions,
                                           firmware.combined, image,
@@ -322,9 +395,9 @@ def flashed_board(board, firmware, secrets_path, tmp_path):
         flashed = time.perf_counter()
     except hil_board_utils.HilBoardUtilsError as e:
         pytest.fail(str(e), pytrace=False)
-    log.info("erased %s, flashed %s and %s (%s): erase %.2fs, build %.2fs, "
-             "flash %.2fs", board.port, firmware.combined.name, secrets_path.name,
-             build.partition.label, erased - start, built - erased, flashed - built)
+    log.info("erased %s, flashed %s with scenario %s: erase %.2fs, build %.2fs, "
+             "flash %.2fs", board.port, firmware.combined.name, secrets_name,
+             erased - start, built - erased, flashed - built)
     return FlashState(secrets_path, erase, build, flash, erase_s=erased - start,
                       build_s=built - erased, flash_s=flashed - built)
 

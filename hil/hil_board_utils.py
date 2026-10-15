@@ -378,20 +378,24 @@ def run_mklittlefs(tool, args):
 
 
 def esp_create_image(tool, secrets_path, size, output):
-    """Pack secrets_path as /secrets.json into a LittleFS image, then verify it
-    by listing the image. Returns the listing."""
+    """Pack secrets_path as /secrets.json into a LittleFS image (an empty one
+    if secrets_path is None), then verify it by listing the image. Returns
+    the listing."""
     geometry = esp_geometry_args(size)
     with tempfile.TemporaryDirectory() as pack_dir:
-        try:
-            shutil.copy(secrets_path, Path(pack_dir) / SECRETS_FILENAME)
-        except OSError as e:
-            raise SecretsError(f"cannot read secrets file: {e}") from e
+        if secrets_path is not None:
+            try:
+                shutil.copy(secrets_path, Path(pack_dir) / SECRETS_FILENAME)
+            except OSError as e:
+                raise SecretsError(f"cannot read secrets file: {e}") from e
         run_mklittlefs(tool, ["-c", pack_dir, *geometry, str(output)])
 
     listing = run_mklittlefs(tool, ["-l", *geometry, str(output)])
-    if f"/{SECRETS_FILENAME}" not in listing:
+    packed = f"/{SECRETS_FILENAME}" in listing
+    if packed != (secrets_path is not None):
         raise MklittlefsError(
-            f"/{SECRETS_FILENAME} not found in image listing:\n{listing}"
+            f"/{SECRETS_FILENAME} {'unexpectedly ' if packed else 'not '}found "
+            f"in image listing:\n{listing}"
         )
     return listing
 
@@ -482,14 +486,17 @@ def esp_check_combined_image(path, chip):
 
 
 def esp_check_flash_layout(combined_bin, fs_image, partition):
-    """The firmware must end before the fs partition, and the fs image must fit it."""
+    """The firmware must end before the fs partition, and the fs image (if
+    any) must fit it."""
     combined_size = Path(combined_bin).stat().st_size
-    fs_size = Path(fs_image).stat().st_size
     if ESP_COMBINED_OFFSET + combined_size > partition.offset:
         raise EspFlashError(
             f"combined image ({combined_size:#x} bytes) overlaps the "
             f"'{partition.label}' partition at {partition.offset:#x}"
         )
+    if fs_image is None:
+        return
+    fs_size = Path(fs_image).stat().st_size
     if fs_size > partition.size:
         raise EspFlashError(
             f"filesystem image ({fs_size:#x} bytes) is larger than the "
@@ -1089,7 +1096,8 @@ class BuildResult:
 def esp_make_littlefs(partitions_path, output, secrets_path=SECRETS_FILENAME,
                       mklittlefs=None):
     """Build a LittleFS image sized to the fs partition. secrets_path is packed
-    as-is (not validated), so tests can build images with bad secrets."""
+    as-is (not validated), so tests can build images with bad secrets; None
+    builds an empty image."""
     part = esp_get_fs_partition(partitions_path)
     tool = find_mklittlefs(mklittlefs)
     listing = esp_create_image(tool, secrets_path, part.size, output)
@@ -1124,7 +1132,8 @@ def esp_erase_flash(port, chip, esptool=None, baud=None):
 def esp_flash(port, chip, partitions_path, combined_bin, fs_image, esptool=None,
               baud=None):
     """Flash the merged firmware at 0x0 and the fs image at its partition offset,
-    at baud (default: esptool's own)."""
+    at baud (default: esptool's own). fs_image=None flashes only the firmware,
+    leaving the fs partition as it was (e.g. erased)."""
     if not port:
         raise EspFlashError("port is required (e.g. /dev/ttyACM0)")
     part = esp_get_fs_partition(partitions_path)
@@ -1134,11 +1143,10 @@ def esp_flash(port, chip, partitions_path, combined_bin, fs_image, esptool=None,
     except OSError as e:
         raise EspFlashError(f"cannot read image: {e}") from e
     tool = esp_find_esptool(esptool)
-    args = esp_write_flash_args(
-        tool, chip, port,
-        [(ESP_COMBINED_OFFSET, combined_bin), (part.offset, fs_image)],
-        baud,
-    )
+    images = [(ESP_COMBINED_OFFSET, combined_bin)]
+    if fs_image is not None:
+        images.append((part.offset, fs_image))
+    args = esp_write_flash_args(tool, chip, port, images, baud)
     output = esp_run_esptool(tool, args)
     return FlashResult(part, [tool.path, *args], output)
 

@@ -38,6 +38,39 @@ class StepTimer:
 
 def test_good_secrets_report_io_user(board, firmware, secrets_file, broker_creds,
                                      flashed_board, serial, power):
+    # --- Arrange ------------------------------------------------------
+    # 1. Load the known-good secrets for this scenario.
+    secrets_path = secrets_file("good")
+    expected_user = broker_creds.username
+    assert expected_user
+
+    # 2. The whole chip was erased, and a LittleFS image holding those
+    #    secrets was built and flashed with the firmware.
+    assert flashed_board.secrets_path == secrets_path
+    fs_partition = hil_board_utils.esp_get_fs_partition(firmware.partitions)
+    assert flashed_board.build.partition == fs_partition
+    assert f"/{hil_board_utils.SECRETS_FILENAME}" in flashed_board.build.listing
+    assert flashed_board.flash.output.count("Hash of data verified") == 2
+
+    # 3. A serial monitor is attached to the board's port.
+    assert serial.port == board.port
+
+    # --- Act ----------------------------------------------------------
+    # 4. Power-cycle the board's hub port and capture the boot once its
+    #    serial port is back.
+    serial.port_reset(board.entry, timeout=15, **power)
+
+    # --- Assert -------------------------------------------------------
+    # 5. The firmware reports the user from secrets.json.
+    serial.expect(rf"^Adafruit\.io User: {re.escape(expected_user)}$",
+                  timeout=30)
+
+
+@pytest.mark.skip(reason="optional instrumentation: step-timed variant of "
+                         "test_good_secrets_report_io_user")
+def test_good_secrets_report_io_user_timed(board, firmware, secrets_file,
+                                           broker_creds, flashed_board, serial,
+                                           power):
     timer = StepTimer()
     try:
         # --- Arrange ------------------------------------------------------
@@ -95,6 +128,52 @@ def test_default_secrets(board, default_secrets, flashed_board, serial, power):
         r"^ERROR: Invalid IO credentials in secrets\.json! TO FIX: Please change "
         r"io_username and io_key to match your Adafruit IO credentials!$",
         timeout=30)
+
+
+@pytest.mark.parametrize("secrets_name", ["no_fs_image"], indirect=True)
+def test_no_fs_image(board, flashed_board, serial, power):
+    # --- Arrange ------------------------------------------------------
+    # 1. The chip was erased and flashed with the firmware only, so the
+    #    fs partition is still erased.
+    assert flashed_board.build is None
+    assert flashed_board.flash.output.count("Hash of data verified") == 1
+
+    # --- Act ----------------------------------------------------------
+    # 2. Power-cycle the board's hub port and capture the boot.
+    serial.port_reset(board.entry, timeout=15, **power)
+
+    # --- Assert -------------------------------------------------------
+    # 3. The firmware can't mount LittleFS and halts, and is still halted
+    #    on the next repeat.
+    for _ in range(2):
+        serial.expect(r"^Fatal Error: Halted execution!$", timeout=30)
+        serial.expect(r"^ERROR: Failure initializing LittleFS!$", timeout=5)
+
+
+@pytest.mark.parametrize("secrets_name", ["no_secrets_file"], indirect=True)
+def test_no_secrets_file(board, flashed_board, serial, power):
+    # --- Arrange ------------------------------------------------------
+    # 1. The chip was erased and flashed with the firmware and an empty
+    #    LittleFS image.
+    assert flashed_board.secrets_path is None
+    assert (f"/{hil_board_utils.SECRETS_FILENAME}"
+            not in flashed_board.build.listing)
+    assert flashed_board.flash.output.count("Hash of data verified") == 2
+
+    # --- Act ----------------------------------------------------------
+    # 2. Power-cycle the board's hub port and capture the boot.
+    serial.port_reset(board.entry, timeout=15, **power)
+
+    # --- Assert -------------------------------------------------------
+    # 3. The firmware mounts LittleFS, finds no secrets.json and halts,
+    #    and is still halted on the next repeat.
+    for _ in range(2):
+        serial.expect(r"^Fatal Error: Halted execution!$", timeout=30)
+        serial.expect(
+            r"^ERROR: No secrets\.json found on filesystem - did you upload "
+            r"credentials\?$",
+            timeout=5)
+    serial.assert_none(r"Failure initializing LittleFS")
 
 
 @pytest.mark.parametrize("secrets_name", ["no_network_type_wifi"], indirect=True)
