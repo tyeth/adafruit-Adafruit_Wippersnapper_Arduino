@@ -8,6 +8,7 @@ board file (hil-boards.json by default).
 Fixture chain:
 
     board (session) -> flashed_board (function) -> serial (function)
+                                                -> device_uid (function)
 
 Every test starts from a clean chip: flashed_board erases the whole flash
 (firmware, NVS, filesystem), then flashes the firmware and a LittleFS image
@@ -46,6 +47,7 @@ import copy
 import json
 import logging
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -66,6 +68,7 @@ GOOD_SECRETS = "good"
 DEFAULT_SECRETS = "default"
 NO_SECRETS_FILE = "no_secrets_file"  # an empty LittleFS image
 NO_FS_IMAGE = "no_fs_image"  # no image: the fs partition stays erased
+DEVICE_UID_RE = re.compile(r"^Device UID: (io-wipper-\S+)$")
 
 log = logging.getLogger("hil.firmware")
 
@@ -416,3 +419,17 @@ def serial(board, flashed_board, request, pytestconfig, tmp_path):
     log_dir = pytestconfig.getoption("serial_log_dir") or tmp_path
     path = mon.dump(Path(log_dir) / f"{request.node.name}.serial.log")
     log.info("serial log: %s", path)
+
+
+@pytest.fixture
+def device_uid(serial):
+    """device_uid(timeout) -> the Device UID the firmware prints at the start
+    of connect(), the client ID it uses on the broker. Call it after the
+    test's Act step, and after expecting any earlier boot lines: it moves the
+    serial cursor past the UID line. Scenarios that halt in provision() never
+    print it."""
+    def read(timeout=30):
+        uid = serial.expect(DEVICE_UID_RE, timeout=timeout).group(1)
+        log.info("device uid: %s", uid)
+        return uid
+    return read

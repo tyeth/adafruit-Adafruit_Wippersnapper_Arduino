@@ -595,6 +595,8 @@ bool wippersnapper::generateDeviceUID() {
 
   // Create the device identifier
   snprintf(_device_uidV2, lenDeviceUID, "%s%s", Ws->_boardIdV2, Ws->sUIDV2);
+  WS_DEBUG_PRINT("Device UID: io-wipper-");
+  WS_DEBUG_PRINTLN(_device_uidV2);
 
   return true;
 }
