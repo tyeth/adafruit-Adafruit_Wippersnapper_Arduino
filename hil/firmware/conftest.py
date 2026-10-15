@@ -13,14 +13,21 @@ Secrets come from a directory of <scenario>.secrets.json files (--secrets-dir,
 else $HIL_SECRETS_DIR, else ~/hil-secrets). good.secrets.json is required: it
 is flashed with the firmware and is the source of broker_creds and
 network_creds. Other scenarios may be invalid on purpose, so they're packed
-byte for byte and never validated. A module picks one by overriding
+byte for byte and never validated. The scenarios in generated_secrets (e.g.
+"default", the firmware's placeholder secrets) aren't read from the dir:
+they're written to a temp file. A module picks a scenario by overriding
 secrets_name:
 
     @pytest.fixture(scope="module")
     def secrets_name():
         return "bad_wifi"
+
+and a single test by parametrizing it indirectly:
+
+    @pytest.mark.parametrize("secrets_name", ["default"], indirect=True)
 """
 
+import copy
 import hashlib
 import json
 import logging
@@ -41,6 +48,7 @@ DEFAULT_SECRETS_DIR = Path.home() / "hil-secrets"
 SECRETS_DIR_ENV = "HIL_SECRETS_DIR"
 SECRETS_SUFFIX = ".secrets.json"
 GOOD_SECRETS = "good"
+DEFAULT_SECRETS = "default"
 
 log = logging.getLogger("hil.firmware")
 
@@ -202,6 +210,48 @@ def good_secrets(secrets_file):
 
 
 @pytest.fixture(scope="session")
+def default_secrets():
+    """The placeholder secrets the firmware rejects, as in
+    examples/secrets-examples/secrets-wifi.json."""
+    return {
+        "io_username": "YOUR_IO_USERNAME_HERE",
+        "io_key": "YOUR_IO_KEY_HERE",
+        "network_type_wifi": {
+            "network_ssid": "YOUR_WIFI_SSID_HERE",
+            "network_password": "YOUR_WIFI_PASS_HERE",
+        },
+    }
+
+
+def _with_wifi(secrets, **changes):
+    """A copy of secrets with network_type_wifi updated with changes."""
+    secrets = copy.deepcopy(secrets)
+    secrets["network_type_wifi"].update(changes)
+    return secrets
+
+
+@pytest.fixture(scope="session")
+def generated_secrets(default_secrets):
+    """Scenarios built here instead of read from the secrets dir, by name.
+    The structure scenarios keep the placeholder credentials: the firmware
+    checks structure first, so it must halt before it gets to them."""
+    no_wifi = {k: v for k, v in default_secrets.items() if k != "network_type_wifi"}
+    return {
+        DEFAULT_SECRETS: default_secrets,
+        "no_network_type_wifi": no_wifi,
+        "empty_alternative_networks":
+            _with_wifi(default_secrets, alternative_networks=[]),
+        "string_alternative_networks":
+            _with_wifi(default_secrets, alternative_networks="YOUR_WIFI_SSID_HERE"),
+        "object_alternative_networks":
+            _with_wifi(default_secrets, alternative_networks={
+                "network_ssid": "YOUR_WIFI_SSID_HERE",
+                "network_password": "YOUR_WIFI_PASS_HERE",
+            }),
+    }
+
+
+@pytest.fixture(scope="session")
 def broker_creds(good_secrets):
     return BrokerCreds(
         host=good_secrets.get("io_url", "io.adafruit.com"),
@@ -270,17 +320,29 @@ def flashed_firmware(board, firmware, secrets_file, good_secrets, tmp_path_facto
 
 
 @pytest.fixture(scope="module")
-def secrets_name():
-    """The secrets scenario this module's tests boot with."""
-    return GOOD_SECRETS
+def secrets_name(request):
+    """The secrets scenario this module's tests boot with, or a test's
+    indirect parameter."""
+    return getattr(request, "param", GOOD_SECRETS)
 
 
 @pytest.fixture(scope="module")
-def flashed_fs(flashed_firmware, secrets_file, secrets_name, tmp_path_factory):
-    """Make the board's filesystem hold secrets_name, flashing it only if it
+def secrets_path(request, secrets_name, secrets_file, tmp_path_factory):
+    """The file for secrets_name: written to a temp file if it's one of
+    generated_secrets, else <secrets_dir>/<secrets_name>.secrets.json."""
+    generated = request.getfixturevalue("generated_secrets")
+    if secrets_name not in generated:
+        return secrets_file(secrets_name)
+    path = tmp_path_factory.mktemp("secrets") / f"{secrets_name}{SECRETS_SUFFIX}"
+    path.write_text(json.dumps(generated[secrets_name], indent=4))
+    return path
+
+
+@pytest.fixture(scope="module")
+def flashed_fs(flashed_firmware, secrets_path, tmp_path_factory):
+    """Make the board's filesystem hold secrets_path, flashing it only if it
     differs from what's there. The file is packed as-is, valid or not."""
     state = flashed_firmware
-    secrets_path = secrets_file(secrets_name)
     digest = _digest(secrets_path)
     if digest == state.fs_digest:
         log.info("fs unchanged (%s), not flashing", secrets_path.name)
