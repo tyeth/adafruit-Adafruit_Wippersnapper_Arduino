@@ -15,7 +15,7 @@ pytestmark = pytest.mark.hardware
 
 def test_reset_captures_whole_boot(port, open_monitor):
     mon = open_monitor(port)
-    boot = mon.reset()
+    boot = mon.board_reset()
     assert boot == mon.boot
 
     mon.expect(r"^ets \w+ +\d+ \d+ [\d:]+$", timeout=5)
@@ -29,9 +29,9 @@ def test_reset_captures_whole_boot(port, open_monitor):
 
 def test_second_reset_starts_a_new_boot(port, open_monitor):
     mon = open_monitor(port)
-    first = mon.reset()
+    first = mon.board_reset()
     expect_banner(mon)
-    second = mon.reset()
+    second = mon.board_reset()
     assert second > first
 
     expect_banner(mon)
@@ -45,7 +45,7 @@ def test_second_reset_starts_a_new_boot(port, open_monitor):
 
 def test_open_does_not_reset(port, open_monitor):
     mon = open_monitor(port)
-    mon.reset()
+    mon.board_reset()
     expect_banner(mon)
     mon.close()
 
@@ -55,7 +55,7 @@ def test_open_does_not_reset(port, open_monitor):
 
 def test_timestamps_and_dump(port, open_monitor, tmp_path):
     mon = open_monitor(port)
-    boot = mon.reset()
+    boot = mon.board_reset()
     expect_banner(mon)
     mon.close()
 
@@ -78,7 +78,7 @@ def test_power_cycle_drops_the_port(board_entry, power, port, open_monitor):
     assert not isinstance(exc.value, AssertionError)
     mon.close()
     with pytest.raises(hbu.SerialError, match="closed"):
-        mon.reset()
+        mon.board_reset()
 
     # A new monitor on the re-enumerated port sees the fresh boot.
     mon = open_monitor(hbu.wait_for_port(board_entry))

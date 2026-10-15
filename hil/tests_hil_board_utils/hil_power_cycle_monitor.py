@@ -106,7 +106,7 @@ def main(argv=None):
         mon = hbu.SerialMonitor(port, args.baud)
         try:
             if args.reset:
-                mon.reset()
+                mon.board_reset()
             check_banner(mon, args.timeout)
         finally:
             mon.close()

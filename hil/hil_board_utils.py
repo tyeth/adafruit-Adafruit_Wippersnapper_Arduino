@@ -22,7 +22,7 @@ Library:
 
     port = hil_board_utils.find_port(board_entry)
     with hil_board_utils.SerialMonitor(port) as mon:
-        mon.reset()
+        mon.board_reset()            # or mon.port_reset(board_entry, timeout=20)
         mon.expect(r"^Adafruit.io WipperSnapper$", timeout=20)
         mon.expect(r"^Board ID: feather-esp32-v2$")
         mon.assert_none(r"Guru Meditation", duration=5)
@@ -488,9 +488,13 @@ def esp_check_flash_layout(combined_bin, fs_image, partition):
         )
 
 
-def esp_write_flash_args(esptool, chip, port, images):
-    """Build esptool args; images is a list of (offset, path) pairs."""
-    args = ["--chip", chip, "--port", str(port), esptool.write_flash_command]
+def esp_write_flash_args(esptool, chip, port, images, baud=None):
+    """Build esptool args; images is a list of (offset, path) pairs. baud is
+    the flashing baud rate (default: esptool's own, 115200)."""
+    args = ["--chip", chip, "--port", str(port)]
+    if baud is not None:
+        args += ["--baud", str(baud)]
+    args.append(esptool.write_flash_command)
     for offset, path in images:
         args += [f"{offset:#x}", str(path)]
     return args
@@ -731,7 +735,7 @@ class SerialMonitor:
     Lifecycle in a function-scoped pytest fixture:
 
         mon = SerialMonitor(port)    # opens the port; the board keeps running
-        mon.reset()                  # boot under observation
+        mon.board_reset()            # boot under observation
         yield mon                    # test calls expect / mark / assert_none
         mon.close()                  # stop the thread, release the port
         mon.dump(log_dir / f"{request.node.name}.serial.log")
@@ -746,14 +750,16 @@ class SerialMonitor:
         Positions are line indices. mark() returns the index the next
         complete line will get. expect() searches forward from a cursor that
         only moves forward: past each match, and to the boot start on
-        reset(). assert_none() defaults to the boot start.
+        board_reset() or port_reset(). assert_none() defaults to the boot
+        start.
 
     Failures:
         expect() and assert_none() raise SerialTimeout/SerialUnexpectedError,
         which are AssertionErrors, so pytest reports them as test failures.
         A port that can't be opened or drops (e.g. the board was power-cycled)
         raises SerialError, reported as an error. The monitor doesn't
-        reconnect: open a new one once the port is back.
+        reconnect on its own: port_reset() power-cycles the board and
+        reopens the port, otherwise open a new monitor once it's back.
 
     Each line is also logged at INFO on the 'hil.serial' logger, so pytest
     shows it under "Captured log" on failure (or live with --log-cli-level=INFO).
@@ -770,16 +776,21 @@ class SerialMonitor:
         self._partial_time = 0.0
         self._cursor = 0
         self._boot = 0
-        self._epoch = 0  # bumped by reset() to drop reads that started before it
+        self._epoch = 0  # bumped by board_reset() to drop reads started before it
         self._read_epoch = 0  # epoch of the reader's current read
         self._error = None
         self._closed = False
         self._cond = threading.Condition()
         self._stop = threading.Event()
+        self._baud = baud
+        self._open()
 
+    def _open(self):
+        """Open self.port and start the reader thread."""
+        import serial
         ser = serial.Serial()
         ser.port = self.port
-        ser.baudrate = baud
+        ser.baudrate = self._baud
         ser.timeout = SERIAL_READ_TIMEOUT
         ser.exclusive = True  # esptool etc. fail cleanly instead of sharing reads
         # Opening raises DTR and RTS together; with both asserted the ESP32
@@ -793,6 +804,7 @@ class SerialMonitor:
         except (OSError, ValueError) as e:
             raise SerialError(f"cannot open {self.port}: {e}") from e
         self._serial = ser
+        self._stop.clear()
         self._reader = threading.Thread(
             target=self._read_loop, name=f"SerialMonitor({self.port})", daemon=True
         )
@@ -860,7 +872,7 @@ class SerialMonitor:
 
     # -- board control ------------------------------------------------------
 
-    def reset(self, hold=0.1):
+    def board_reset(self, hold=0.1):
         """Hard-reset through the USB-serial auto-reset circuit (RTS -> EN,
         DTR -> IO0) and return the boot start: the index of the boot's first
         line. The cursor moves there, so the next expect() only sees this
@@ -894,6 +906,43 @@ class SerialMonitor:
             raise SerialError(f"{self.port}: reset failed: {e}") from e
         return self._boot
 
+    def port_reset(self, entry, delay=2, timeout=15, uhubctl=None, sudo=True):
+        """Power-cycle the board's hub port (entry's location) with uhubctl,
+        wait up to timeout seconds for its serial port to re-enumerate,
+        reopen it, and return the boot start. The cursor moves there, so the
+        next expect() only sees this boot. delay is how long power stays off.
+
+        Unlike board_reset() this is a real power-on reset and works without
+        an auto-reset circuit. The board starts booting as soon as power
+        returns, before the port can be reopened, so the first lines of the
+        boot (e.g. the ROM banner) can be missed. The port's name may change;
+        self.port is updated. Raises UhubctlError, PortError if the port
+        doesn't come back in time, or SerialError if it can't be reopened.
+        """
+        if self._closed:
+            raise SerialError(f"{self.port}: monitor is closed")
+        self._stop.set()
+        self._reader.join()
+        self._serial.close()
+        with self._cond:
+            if self._partial:  # last words of the previous boot
+                self._emit(self._partial, self._partial_time)
+                self._partial.clear()
+        try:
+            power_cycle_board(entry, delay, uhubctl, sudo)
+            port = wait_for_port(entry, timeout)
+            with self._cond:
+                self.port = str(port)
+                self._error = None
+                self._boot = self._cursor = len(self._lines)
+            self._open()
+        except HilBoardUtilsError as e:
+            with self._cond:  # expect()/assert_none() report it instead of waiting
+                self._error = e
+                self._cond.notify_all()
+            raise
+        return self._boot
+
     # -- matching -----------------------------------------------------------
 
     def mark(self):
@@ -903,7 +952,8 @@ class SerialMonitor:
 
     @property
     def boot(self):
-        """Index of the first line of the last reset()'s boot (0 if none)."""
+        """Index of the first line of the last board_reset()'s or
+        port_reset()'s boot (0 if none)."""
         return self._boot
 
     @staticmethod
@@ -1035,8 +1085,10 @@ class FlashResult:
     output: str
 
 
-def esp_flash(port, chip, partitions_path, combined_bin, fs_image, esptool=None):
-    """Flash the merged firmware at 0x0 and the fs image at its partition offset."""
+def esp_flash(port, chip, partitions_path, combined_bin, fs_image, esptool=None,
+              baud=None):
+    """Flash the merged firmware at 0x0 and the fs image at its partition offset,
+    at baud (default: esptool's own)."""
     if not port:
         raise EspFlashError("port is required (e.g. /dev/ttyACM0)")
     part = esp_get_fs_partition(partitions_path)
@@ -1049,13 +1101,15 @@ def esp_flash(port, chip, partitions_path, combined_bin, fs_image, esptool=None)
     args = esp_write_flash_args(
         tool, chip, port,
         [(ESP_COMBINED_OFFSET, combined_bin), (part.offset, fs_image)],
+        baud,
     )
     output = esp_run_esptool(tool, args)
     return FlashResult(part, [tool.path, *args], output)
 
 
-def esp_flash_fs(port, chip, partitions_path, fs_image, esptool=None):
-    """Flash only the fs image at its partition offset, leaving firmware intact."""
+def esp_flash_fs(port, chip, partitions_path, fs_image, esptool=None, baud=None):
+    """Flash only the fs image at its partition offset, leaving firmware intact,
+    at baud (default: esptool's own)."""
     if not port:
         raise EspFlashError("port is required (e.g. /dev/ttyACM0)")
     part = esp_get_fs_partition(partitions_path)
@@ -1069,7 +1123,7 @@ def esp_flash_fs(port, chip, partitions_path, fs_image, esptool=None):
             f"'{part.label}' partition ({part.size:#x} bytes)"
         )
     tool = esp_find_esptool(esptool)
-    args = esp_write_flash_args(tool, chip, port, [(part.offset, fs_image)])
+    args = esp_write_flash_args(tool, chip, port, [(part.offset, fs_image)], baud)
     output = esp_run_esptool(tool, args)
     return FlashResult(part, [tool.path, *args], output)
 
@@ -1102,7 +1156,6 @@ def main(argv=None):
         if args.get_offset:
             print(f"{esp_get_fs_offset(args.partitions):#x}", flush=True)
         if args.o is not None:
-            load_secrets(args.secrets)
             result = esp_make_littlefs(args.partitions, args.o, args.secrets,
                                        args.mklittlefs)
             part = result.partition

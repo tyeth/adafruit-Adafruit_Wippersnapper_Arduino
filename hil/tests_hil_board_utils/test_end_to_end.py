@@ -40,7 +40,7 @@ def test_provision_flash_power_cycle_boot(pytestconfig, board_entry, firmware, c
 
     # 5. Reset once attached to capture the whole boot, then check it.
     mon = open_monitor(port)
-    mon.reset()
+    mon.board_reset()
     mon.expect(ROM_RESET_RE, timeout=5)
     expect_banner(mon)
     expect_identity(mon, secrets)

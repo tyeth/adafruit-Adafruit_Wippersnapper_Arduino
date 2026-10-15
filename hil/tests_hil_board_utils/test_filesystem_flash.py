@@ -73,7 +73,7 @@ def test_esptool_found():
 
 def boot_and_check(open_monitor, port, secrets, banner=False):
     mon = open_monitor(port)
-    mon.reset()
+    mon.board_reset()
     mon.expect(ROM_RESET_RE, timeout=5)
     if banner:
         expect_banner(mon)
