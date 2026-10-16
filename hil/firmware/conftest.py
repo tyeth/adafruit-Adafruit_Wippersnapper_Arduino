@@ -3,7 +3,7 @@ board file (hil-boards.json by default).
 
     pytest firmware/provisioning/
     pytest firmware -k io_user
-    pytest firmware --secrets-dir ~/hil-secrets --log-cli-level=INFO
+    pytest firmware --log-cli-level=INFO
 
 Fixture chain:
 
@@ -14,15 +14,24 @@ Every test starts from a clean chip: flashed_board erases the whole flash
 (firmware, NVS, filesystem), then flashes the firmware and a LittleFS image
 holding the test's secrets scenario, before the test body runs.
 
-Secrets come from a directory of <scenario>.secrets.json files (--secrets-dir,
-else $HIL_SECRETS_DIR, else ~/hil-secrets). good.secrets.json is the default
-scenario and the source of broker_creds and network_creds. Other scenarios
-may be invalid on purpose, so they're packed byte for byte and never
-validated. The scenarios in generated_secrets (e.g. "default", the firmware's
-placeholder secrets) aren't read from the dir: they're written to a temp
-file. Two scenarios have no secrets file at all: "no_secrets_file" flashes
-an empty LittleFS image, and "no_fs_image" flashes no image, leaving the fs
-partition erased. A module picks a scenario by overriding secrets_name:
+Each scenario's secrets are built here and written to a temp file; none
+are read from disk. The valid credentials come from environment variables
+set on the HIL host, never from the repo:
+
+    HIL_IO_USERNAME, HIL_IO_KEY      required by the scenarios with valid IO
+    HIL_WIFI_SSID, HIL_WIFI_PASSWORD required by the scenarios with valid WiFi
+                                     (the password may be empty: open network)
+    HIL_IO_URL, HIL_IO_PORT          optional, default io.adafruit.com and 8883
+
+The scenarios with valid credentials are "good" (the default: valid WiFi
+and IO), "valid_io_only" and "valid_wifi_only" (the other half keeps the
+placeholders), and "ssid_found" (valid WiFi, fake IO credentials that pass
+provisioning). A test only needs the variables its scenario uses. The
+scenarios in generated_secrets (e.g. "default", the firmware's placeholder
+secrets) need none, and may be invalid on purpose. Two scenarios have no
+secrets file at all: "no_secrets_file" flashes an empty LittleFS image, and
+"no_fs_image" flashes no image, leaving the fs partition erased. A module
+picks a scenario by overriding secrets_name:
 
     @pytest.fixture
     def secrets_name():
@@ -61,10 +70,11 @@ sys.path.insert(0, str(HIL_DIR))
 import hil_board_utils  # noqa: E402
 
 DEFAULT_BOARDS = HIL_DIR / "hil-boards.json"
-DEFAULT_SECRETS_DIR = Path.home() / "hil-secrets"
-SECRETS_DIR_ENV = "HIL_SECRETS_DIR"
 SECRETS_SUFFIX = ".secrets.json"
-GOOD_SECRETS = "good"
+GOOD_SECRETS = "good"  # valid WiFi and IO
+VALID_IO_ONLY = "valid_io_only"
+VALID_WIFI_ONLY = "valid_wifi_only"
+SSID_FOUND = "ssid_found"  # valid WiFi, FAKE_IO_CREDS
 DEFAULT_SECRETS = "default"
 NO_SECRETS_FILE = "no_secrets_file"  # an empty LittleFS image
 NO_FS_IMAGE = "no_fs_image"  # no image: the fs partition stays erased
@@ -81,9 +91,6 @@ def pytest_addoption(parser):
     group.addoption("--firmware-dir", type=Path,
                     help="dir with *.combined.bin and *.partitions.bin "
                          "(default: the board entry's firmware_dir)")
-    group.addoption("--secrets-dir", type=Path,
-                    help=f"dir of <scenario>{SECRETS_SUFFIX} files "
-                         f"(default: ${SECRETS_DIR_ENV}, else {DEFAULT_SECRETS_DIR})")
     group.addoption("--uhubctl", help="path to uhubctl, used if not found on PATH")
     group.addoption("--sudo", action="store_true", help="run uhubctl under 'sudo -n'")
     group.addoption("--serial-log-dir", type=Path,
@@ -249,36 +256,38 @@ class NetworkCreds:
     password: str
 
 
-@pytest.fixture(scope="session")
-def secrets_dir(pytestconfig):
-    directory = (pytestconfig.getoption("secrets_dir")
-                 or os.environ.get(SECRETS_DIR_ENV)
-                 or DEFAULT_SECRETS_DIR)
-    directory = Path(directory).expanduser()
-    if not directory.is_dir():
-        pytest.fail(f"secrets dir {directory} not found: pass --secrets-dir or set "
-                    f"${SECRETS_DIR_ENV}", pytrace=False)
-    return directory
+def _env(name, required=True, allow_empty=False):
+    """The environment variable name, or None if it's unset and not
+    required. Its value is never logged."""
+    value = os.environ.get(name)
+    if value is None or (not allow_empty and not value.strip()):
+        if not required:
+            return None
+        pytest.fail(f"${name} is not set: export the valid credentials on the "
+                    "HIL host (see conftest.py)", pytrace=False)
+    return value
 
 
 @pytest.fixture(scope="session")
-def secrets_file(secrets_dir):
-    """secrets_file(name) -> the path of <secrets_dir>/<name>.secrets.json."""
-    def find(name):
-        path = secrets_dir / f"{name}{SECRETS_SUFFIX}"
-        if not path.is_file():
-            pytest.fail(f"secrets scenario '{name}' not found: {path}", pytrace=False)
-        return path
-    return find
+def broker_creds():
+    """The valid IO credentials, from $HIL_IO_*."""
+    port = _env("HIL_IO_PORT", required=False) or "8883"
+    if not port.isdigit() or not 1 <= int(port) <= 65535:
+        pytest.fail(f"$HIL_IO_PORT must be a port number, got {port!r}",
+                    pytrace=False)
+    return BrokerCreds(
+        host=_env("HIL_IO_URL", required=False) or "io.adafruit.com",
+        port=int(port),
+        username=_env("HIL_IO_USERNAME"),
+        key=_env("HIL_IO_KEY"),
+    )
 
 
 @pytest.fixture(scope="session")
-def good_secrets(secrets_file):
-    """The known-good secrets, validated. The only scenario that is."""
-    try:
-        return hil_board_utils.load_secrets(secrets_file(GOOD_SECRETS))
-    except hil_board_utils.SecretsError as e:
-        pytest.fail(str(e), pytrace=False)
+def network_creds():
+    """The valid WiFi credentials, from $HIL_WIFI_*."""
+    return NetworkCreds(ssid=_env("HIL_WIFI_SSID"),
+                        password=_env("HIL_WIFI_PASSWORD", allow_empty=True))
 
 
 @pytest.fixture(scope="session")
@@ -295,6 +304,21 @@ def default_secrets():
     }
 
 
+def _with_io(secrets, creds):
+    """A copy of secrets with the IO credentials in creds."""
+    secrets = copy.deepcopy(secrets)
+    secrets.update(io_username=creds.username, io_key=creds.key,
+                   io_url=creds.host, io_port=creds.port)
+    return secrets
+
+
+# Credentials that pass the firmware's placeholder checks but are valid
+# nowhere, for scenarios that must fail later, e.g. at the WiFi scan.
+FAKE_IO_CREDS = BrokerCreds(host="io.adafruit.com", port=8883,
+                            username="hil_fake_user", key="hil_fake_key")
+MISSING_SSID = "hil-no-such-network"
+
+
 def _with_wifi(secrets, **changes):
     """A copy of secrets with network_type_wifi updated with changes."""
     secrets = copy.deepcopy(secrets)
@@ -306,7 +330,8 @@ def _with_wifi(secrets, **changes):
 def generated_secrets(default_secrets):
     """Scenarios built here instead of read from the secrets dir, by name.
     The structure scenarios keep the placeholder credentials: the firmware
-    checks structure first, so it must halt before it gets to them."""
+    checks structure first, so it must halt before it gets to them. The
+    network scenarios use FAKE_IO_CREDS, so they need no $HIL_* variables."""
     no_wifi = {k: v for k, v in default_secrets.items() if k != "network_type_wifi"}
     return {
         DEFAULT_SECRETS: default_secrets,
@@ -320,23 +345,52 @@ def generated_secrets(default_secrets):
                 "network_ssid": "YOUR_WIFI_SSID_HERE",
                 "network_password": "YOUR_WIFI_PASS_HERE",
             }),
+        "ssid_not_found":
+            _with_wifi(_with_io(default_secrets, FAKE_IO_CREDS),
+                       network_ssid=MISSING_SSID,
+                       network_password="hil_fake_password"),
     }
 
 
 @pytest.fixture(scope="session")
-def broker_creds(good_secrets):
-    return BrokerCreds(
-        host=good_secrets.get("io_url", "io.adafruit.com"),
-        port=good_secrets.get("io_port", 8883),
-        username=good_secrets["io_username"],
-        key=good_secrets["io_key"],
-    )
+def valid_secrets(default_secrets, broker_creds, network_creds):
+    """Secrets with valid WiFi and IO credentials: the "good" scenario."""
+    return _with_wifi(_with_io(default_secrets, broker_creds),
+                      network_ssid=network_creds.ssid,
+                      network_password=network_creds.password)
 
 
 @pytest.fixture(scope="session")
-def network_creds(good_secrets):
-    wifi = good_secrets["network_type_wifi"]
-    return NetworkCreds(ssid=wifi["network_ssid"], password=wifi["network_password"])
+def valid_io_secrets(default_secrets, broker_creds):
+    """Secrets with valid IO credentials and placeholder WiFi."""
+    return _with_io(default_secrets, broker_creds)
+
+
+@pytest.fixture(scope="session")
+def valid_wifi_secrets(default_secrets, network_creds):
+    """Secrets with valid WiFi credentials and placeholder IO."""
+    return _with_wifi(default_secrets, network_ssid=network_creds.ssid,
+                      network_password=network_creds.password)
+
+
+@pytest.fixture(scope="session")
+def ssid_found_secrets(default_secrets, network_creds):
+    """Secrets with valid WiFi credentials and FAKE_IO_CREDS, which pass
+    provisioning so the firmware gets to the WiFi scan."""
+    return _with_wifi(_with_io(default_secrets, FAKE_IO_CREDS),
+                      network_ssid=network_creds.ssid,
+                      network_password=network_creds.password)
+
+
+# The scenarios with valid credentials, and their fixtures. They're looked
+# up only when a test uses them, so the other scenarios run without the
+# $HIL_* variables.
+VALID_SCENARIOS = {
+    GOOD_SECRETS: "valid_secrets",
+    VALID_IO_ONLY: "valid_io_secrets",
+    VALID_WIFI_ONLY: "valid_wifi_secrets",
+    SSID_FOUND: "ssid_found_secrets",
+}
 
 
 # --- Flashing -------------------------------------------------------------
@@ -350,17 +404,20 @@ def secrets_name(request):
 
 
 @pytest.fixture
-def secrets_path(request, secrets_name, secrets_file, tmp_path):
-    """The file for secrets_name: None for no_secrets_file and no_fs_image,
-    written to a temp file if it's one of generated_secrets, else
-    <secrets_dir>/<secrets_name>.secrets.json."""
+def secrets_path(request, secrets_name, tmp_path):
+    """secrets_name's secrets, written to a temp file: None for
+    no_secrets_file and no_fs_image."""
     if secrets_name in (NO_SECRETS_FILE, NO_FS_IMAGE):
         return None
-    generated = request.getfixturevalue("generated_secrets")
-    if secrets_name not in generated:
-        return secrets_file(secrets_name)
+    if secrets_name in VALID_SCENARIOS:
+        secrets = request.getfixturevalue(VALID_SCENARIOS[secrets_name])
+    else:
+        generated = request.getfixturevalue("generated_secrets")
+        if secrets_name not in generated:
+            pytest.fail(f"unknown secrets scenario '{secrets_name}'", pytrace=False)
+        secrets = generated[secrets_name]
     path = tmp_path / f"{secrets_name}{SECRETS_SUFFIX}"
-    path.write_text(json.dumps(generated[secrets_name], indent=4))
+    path.write_text(json.dumps(secrets, indent=4))
     return path
 
 

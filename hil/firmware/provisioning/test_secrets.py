@@ -36,17 +36,18 @@ class StepTimer:
         print("\nstep timings:\n" + "\n".join(lines))
 
 
-def test_good_secrets_report_io_user(board, firmware, secrets_file, broker_creds,
+def test_good_secrets_report_io_user(board, firmware, valid_secrets, broker_creds,
                                      flashed_board, serial, power):
     # --- Arrange ------------------------------------------------------
-    # 1. Load the known-good secrets for this scenario.
-    secrets_path = secrets_file("good")
+    # 1. The valid secrets for this scenario, from the $HIL_* variables.
     expected_user = broker_creds.username
     assert expected_user
 
     # 2. The whole chip was erased, and a LittleFS image holding those
-    #    secrets was built and flashed with the firmware.
-    assert flashed_board.secrets_path == secrets_path
+    #    secrets was built and flashed with the firmware. (Compared outside
+    #    the assert so a failure doesn't print the credentials.)
+    matches = json.loads(flashed_board.secrets_path.read_text()) == valid_secrets
+    assert matches
     fs_partition = hil_board_utils.esp_get_fs_partition(firmware.partitions)
     assert flashed_board.build.partition == fs_partition
     assert f"/{hil_board_utils.SECRETS_FILENAME}" in flashed_board.build.listing
@@ -68,15 +69,14 @@ def test_good_secrets_report_io_user(board, firmware, secrets_file, broker_creds
 
 @pytest.mark.skip(reason="optional instrumentation: step-timed variant of "
                          "test_good_secrets_report_io_user")
-def test_good_secrets_report_io_user_timed(board, firmware, secrets_file,
+def test_good_secrets_report_io_user_timed(board, firmware, valid_secrets,
                                            broker_creds, flashed_board, serial,
                                            power):
     timer = StepTimer()
     try:
         # --- Arrange ------------------------------------------------------
-        # 1. Load the known-good secrets for this scenario.
+        # 1. The valid secrets for this scenario, from the $HIL_* variables.
         with timer.step("(1) load secrets"):
-            secrets_path = secrets_file("good")
             expected_user = broker_creds.username
             assert expected_user
 
@@ -86,7 +86,10 @@ def test_good_secrets_report_io_user_timed(board, firmware, secrets_file,
         timer.record("(2a) erase chip", flashed_board.erase_s)
         timer.record("(2b) build fs image", flashed_board.build_s)
         timer.record("(2c) flash firmware + fs", flashed_board.flash_s)
-        assert flashed_board.secrets_path == secrets_path
+        # (Compared outside the assert so a failure doesn't print the
+        # credentials.)
+        matches = json.loads(flashed_board.secrets_path.read_text()) == valid_secrets
+        assert matches
         fs_partition = hil_board_utils.esp_get_fs_partition(firmware.partitions)
         assert flashed_board.build.partition == fs_partition
         assert f"/{hil_board_utils.SECRETS_FILENAME}" in flashed_board.build.listing
