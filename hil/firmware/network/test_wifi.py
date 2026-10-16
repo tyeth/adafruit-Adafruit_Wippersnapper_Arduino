@@ -26,8 +26,8 @@ def ssid_found_pattern(ssid):
             rf"SSID \({re.escape(ssid)}\) found! RSSI: -?\d+$")
 
 
-@pytest.mark.parametrize("secrets_name", ["ssid_found"], indirect=True)
-def test_ssid_found(board, ssid_found_secrets, network_creds, secrets_name,
+@pytest.mark.parametrize("secrets_name", ["ssid_valid"], indirect=True)
+def test_ssid_found(board, ssid_valid_secrets, network_creds, secrets_name,
                     flashed_board, serial, power):
     # --- Arrange ------------------------------------------------------
     # 1. The chip was erased and flashed with the firmware and secrets
@@ -35,7 +35,7 @@ def test_ssid_found(board, ssid_found_secrets, network_creds, secrets_name,
     #    fake IO credentials that pass provisioning. (Compared outside the
     #    assert so a failure doesn't print the credentials.)
     matches = (json.loads(flashed_board.secrets_path.read_text())
-               == ssid_found_secrets)
+               == ssid_valid_secrets)
     assert matches
 
     # --- Act ----------------------------------------------------------
@@ -58,8 +58,8 @@ def test_ssid_found(board, ssid_found_secrets, network_creds, secrets_name,
                        r"scan result)")
 
 
-@pytest.mark.parametrize("secrets_name", ["ssid_found"], indirect=True)
-def test_wifi_connected(board, ssid_found_secrets, network_creds, secrets_name,
+@pytest.mark.parametrize("secrets_name", ["ssid_valid"], indirect=True)
+def test_wifi_connected(board, ssid_valid_secrets, network_creds, secrets_name,
                         flashed_board, serial, power):
     # --- Arrange ------------------------------------------------------
     # 1. The chip was erased and flashed with the firmware and secrets
@@ -67,11 +67,11 @@ def test_wifi_connected(board, ssid_found_secrets, network_creds, secrets_name,
     #    fake IO credentials that pass provisioning. (Compared outside the
     #    assert so a failure doesn't print the credentials.)
     matches = (json.loads(flashed_board.secrets_path.read_text())
-               == ssid_found_secrets)
+               == ssid_valid_secrets)
     assert matches
 
     # --- Act ----------------------------------------------------------
-    # 2. Power-cycle the board's hub port and capture the boot.
+    # 2. Power-cycle the DUT's hub port and capture the boot.
     serial.port_reset(board.entry, timeout=15, **power)
 
     # --- Assert -------------------------------------------------------
@@ -79,7 +79,7 @@ def test_wifi_connected(board, ssid_found_secrets, network_creds, secrets_name,
     serial.expect(r"^Running Network FSM\.\.\.$", timeout=30)
     serial.expect(ssid_found_pattern(network_creds.ssid), timeout=30)
 
-    # 4. Leave the board alone through its connect attempts until it
+    # 4. Leave the DUT alone through its connect attempts until it
     #    either connects (FSM_NET_CHECK_NETWORK sees WS_NET_CONNECTED) or
     #    gives up after the 5th attempt.
     m = serial.expect(r"^(Connected to WiFi!|ERROR: Unable to connect to "
@@ -87,6 +87,42 @@ def test_wifi_connected(board, ssid_found_secrets, network_creds, secrets_name,
 
     # 5. It connected.
     assert m.group(1) == "Connected to WiFi!", m.string
+
+
+@pytest.mark.parametrize("secrets_name", ["invalid_password"], indirect=True)
+def test_wifi_invalid_password(board, invalid_password_secrets, network_creds,
+                               secrets_name, flashed_board, serial, power):
+    # --- Arrange ------------------------------------------------------
+    # 1. The chip was erased and flashed with the firmware and secrets
+    #    naming the HIL WiFi network with a wrong password, and fake IO
+    #    credentials that pass provisioning. (Compared outside the assert
+    #    so a failure doesn't print the credentials.)
+    matches = (json.loads(flashed_board.secrets_path.read_text())
+               == invalid_password_secrets)
+    assert matches
+
+    # --- Act ----------------------------------------------------------
+    # 2. Power-cycle the DUT's hub port and capture the boot.
+    serial.port_reset(board.entry, timeout=15, **power)
+
+    # --- Assert -------------------------------------------------------
+    # 3. Provisioning passes and the scan finds the SSID: the password
+    #    isn't checked until the connect.
+    serial.expect(r"^Running Network FSM\.\.\.$", timeout=30)
+    serial.expect(ssid_found_pattern(network_creds.ssid), timeout=30)
+
+    # 4. All 5 connect attempts fail, so runNetFSM() gives up.
+    serial.expect(r"^Connecting to WiFi \(attempt #4\)$",
+                  timeout=WIFI_CONNECT_TIMEOUT)
+    serial.expect(r"^ERROR: Unable to connect to WiFi!$",
+                  timeout=WIFI_CONNECT_TIMEOUT)
+
+    # 5. DUT halts until the WDT reboots the board.
+    serial.expect(r"ERROR: Unable to connect to WiFi, rebooting soon\.\.\.$",
+                  timeout=10)
+
+    # 6. DUT never connected.
+    serial.assert_none(r"^Connected to WiFi!$")
 
 
 @pytest.mark.parametrize("secrets_name", ["ssid_not_found"], indirect=True)

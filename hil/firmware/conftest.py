@@ -25,8 +25,9 @@ set on the HIL host, never from the repo:
 
 The scenarios with valid credentials are "good" (the default: valid WiFi
 and IO), "valid_io_only" and "valid_wifi_only" (the other half keeps the
-placeholders), and "ssid_found" (valid WiFi, fake IO credentials that pass
-provisioning). A test only needs the variables its scenario uses. The
+placeholders), "ssid_valid" (valid WiFi, fake IO credentials that pass
+provisioning) and "invalid_password" (as "ssid_valid", but with a wrong
+WiFi password). A test only needs the variables its scenario uses. The
 scenarios in generated_secrets (e.g. "default", the firmware's placeholder
 secrets) need none, and may be invalid on purpose. Two scenarios have no
 secrets file at all: "no_secrets_file" flashes an empty LittleFS image, and
@@ -74,7 +75,8 @@ SECRETS_SUFFIX = ".secrets.json"
 GOOD_SECRETS = "good"  # valid WiFi and IO
 VALID_IO_ONLY = "valid_io_only"
 VALID_WIFI_ONLY = "valid_wifi_only"
-SSID_FOUND = "ssid_found"  # valid WiFi, FAKE_IO_CREDS
+SSID_VALID = "ssid_valid"  # valid WiFi, FAKE_IO_CREDS
+INVALID_PASSWORD = "invalid_password"  # valid SSID, wrong password, FAKE_IO_CREDS
 DEFAULT_SECRETS = "default"
 NO_SECRETS_FILE = "no_secrets_file"  # an empty LittleFS image
 NO_FS_IMAGE = "no_fs_image"  # no image: the fs partition stays erased
@@ -317,6 +319,7 @@ def _with_io(secrets, creds):
 FAKE_IO_CREDS = BrokerCreds(host="io.adafruit.com", port=8883,
                             username="hil_fake_user", key="hil_fake_key")
 MISSING_SSID = "hil-no-such-network"
+WRONG_WIFI_PASSWORD = "invalidpassword"
 
 
 def _with_wifi(secrets, **changes):
@@ -374,12 +377,21 @@ def valid_wifi_secrets(default_secrets, network_creds):
 
 
 @pytest.fixture(scope="session")
-def ssid_found_secrets(default_secrets, network_creds):
+def ssid_valid_secrets(default_secrets, network_creds):
     """Secrets with valid WiFi credentials and FAKE_IO_CREDS, which pass
     provisioning so the firmware gets to the WiFi scan."""
     return _with_wifi(_with_io(default_secrets, FAKE_IO_CREDS),
                       network_ssid=network_creds.ssid,
                       network_password=network_creds.password)
+
+
+@pytest.fixture(scope="session")
+def invalid_password_secrets(default_secrets, network_creds):
+    """Secrets naming the HIL WiFi network with a wrong password, and
+    FAKE_IO_CREDS, so the scan finds the SSID but the connect fails."""
+    return _with_wifi(_with_io(default_secrets, FAKE_IO_CREDS),
+                      network_ssid=network_creds.ssid,
+                      network_password=WRONG_WIFI_PASSWORD)
 
 
 # The scenarios with valid credentials, and their fixtures. They're looked
@@ -389,7 +401,8 @@ VALID_SCENARIOS = {
     GOOD_SECRETS: "valid_secrets",
     VALID_IO_ONLY: "valid_io_secrets",
     VALID_WIFI_ONLY: "valid_wifi_secrets",
-    SSID_FOUND: "ssid_found_secrets",
+    SSID_VALID: "ssid_valid_secrets",
+    INVALID_PASSWORD: "invalid_password_secrets",
 }
 
 
