@@ -39,8 +39,9 @@ def test_ssid_found(board, ssid_valid_secrets, network_creds, secrets_name,
     assert matches
 
     # --- Act ----------------------------------------------------------
-    # 2. Power-cycle the board's hub port and capture the boot.
-    serial.port_reset(board.entry, timeout=15, **power)
+    # 2. Power-cycle the board's hub port, checking that it really reset
+    #    (its serial port went away and came back), and capture the boot.
+    serial.port_reset(board.entry, timeout=15, confirm_off=True, **power)
 
     # --- Assert -------------------------------------------------------
     # 3. Provisioning passes and runNetFSM() scans for the SSID.
@@ -71,8 +72,9 @@ def test_wifi_connected(board, ssid_valid_secrets, network_creds, secrets_name,
     assert matches
 
     # --- Act ----------------------------------------------------------
-    # 2. Power-cycle the DUT's hub port and capture the boot.
-    serial.port_reset(board.entry, timeout=15, **power)
+    # 2. Power-cycle the DUT's hub port, checking that it really reset
+    #    (its serial port went away and came back), and capture the boot.
+    serial.port_reset(board.entry, timeout=15, confirm_off=True, **power)
 
     # --- Assert -------------------------------------------------------
     # 3. Provisioning passes and the scan finds the SSID.
@@ -102,8 +104,9 @@ def test_wifi_invalid_password(board, invalid_password_secrets, network_creds,
     assert matches
 
     # --- Act ----------------------------------------------------------
-    # 2. Power-cycle the DUT's hub port and capture the boot.
-    serial.port_reset(board.entry, timeout=15, **power)
+    # 2. Power-cycle the DUT's hub port, checking that it really reset
+    #    (its serial port went away and came back), and capture the boot.
+    serial.port_reset(board.entry, timeout=15, confirm_off=True, **power)
 
     # --- Assert -------------------------------------------------------
     # 3. Provisioning passes and the scan finds the SSID: the password
@@ -135,8 +138,9 @@ def test_ssid_not_found(board, generated_secrets, secrets_name, flashed_board,
             == generated_secrets[secrets_name])
 
     # --- Act ----------------------------------------------------------
-    # 2. Power-cycle the board's hub port and capture the boot.
-    serial.port_reset(board.entry, timeout=15, **power)
+    # 2. Power-cycle the board's hub port, checking that it really reset
+    #    (its serial port went away and came back), and capture the boot.
+    serial.port_reset(board.entry, timeout=15, confirm_off=True, **power)
 
     # --- Assert -------------------------------------------------------
     # 3. Provisioning passes and runNetFSM() scans for the SSID.

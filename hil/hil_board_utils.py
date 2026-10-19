@@ -705,12 +705,27 @@ def _power_cycle(hub, port, delay=2, uhubctl=None, sudo=True):
     return run_uhubctl(uhubctl_args(hub, port, "cycle", delay), uhubctl, sudo)
 
 
-def power_cycle_board(entry, delay=2, uhubctl=None, sudo=True):
-    """Power-cycle the board entry's location and forget its cached port."""
+def power_cycle_board(entry, delay=2, uhubctl=None, sudo=True, confirm_off=False,
+                      off_timeout=10):
+    """Power-cycle the board entry's location and forget its cached port.
+
+    With confirm_off, the port is switched off, then the board's serial
+    port must disappear within off_timeout seconds (PortError if it
+    doesn't, e.g. the hub doesn't really cut power) before delay seconds
+    off and switching it back on. The port is switched back on either way.
+    """
     validate_board_entry(entry)
     clear_port(entry["board"])
     loc = entry["location"]
-    _power_cycle(loc["hub"], loc["port"], delay, uhubctl, sudo)
+    if not confirm_off:
+        _power_cycle(loc["hub"], loc["port"], delay, uhubctl, sudo)
+        return
+    _power_off(loc["hub"], loc["port"], uhubctl, sudo)
+    try:
+        wait_for_port_gone(entry, off_timeout)
+        time.sleep(delay)
+    finally:
+        _power_on(loc["hub"], loc["port"], uhubctl, sudo)
 
 
 def wait_for_port(entry, timeout=15, interval=0.5):
@@ -730,6 +745,21 @@ def wait_for_port(entry, timeout=15, interval=0.5):
         except PortError:
             if time.monotonic() >= deadline:
                 raise
+        time.sleep(interval)
+
+
+def wait_for_port_gone(entry, timeout=10, interval=0.2):
+    """Poll until the board's serial port is gone (e.g. after power off)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            port = find_port(entry, refresh=True)
+        except PortError:
+            clear_port(entry["board"])
+            return
+        if time.monotonic() >= deadline:
+            raise PortError(f"board '{entry['board']}': {port} still present "
+                            f"{timeout}s after power off")
         time.sleep(interval)
 
 
@@ -931,7 +961,8 @@ class SerialMonitor:
             raise SerialError(f"{self.port}: reset failed: {e}") from e
         return self._boot
 
-    def port_reset(self, entry, delay=2, timeout=15, uhubctl=None, sudo=True):
+    def port_reset(self, entry, delay=2, timeout=15, uhubctl=None, sudo=True,
+                   confirm_off=False):
         """Power-cycle the board's hub port (entry's location) with uhubctl,
         wait up to timeout seconds for its serial port to re-enumerate,
         reopen it, and return the boot start. The cursor moves there, so the
@@ -941,8 +972,10 @@ class SerialMonitor:
         an auto-reset circuit. The board starts booting as soon as power
         returns, before the port can be reopened, so the first lines of the
         boot (e.g. the ROM banner) can be missed. The port's name may change;
-        self.port is updated. Raises UhubctlError, PortError if the port
-        doesn't come back in time, or SerialError if it can't be reopened.
+        self.port is updated. With confirm_off, the port must also be seen
+        to disappear while power is off (see power_cycle_board()). Raises
+        UhubctlError, PortError if the port doesn't go away or come back in
+        time, or SerialError if it can't be reopened.
         """
         if self._closed:
             raise SerialError(f"{self.port}: monitor is closed")
@@ -954,7 +987,7 @@ class SerialMonitor:
                 self._emit(self._partial, self._partial_time)
                 self._partial.clear()
         try:
-            power_cycle_board(entry, delay, uhubctl, sudo)
+            power_cycle_board(entry, delay, uhubctl, sudo, confirm_off)
             port = wait_for_port(entry, timeout)
             with self._cond:
                 self.port = str(port)

@@ -26,8 +26,11 @@ set on the HIL host, never from the repo:
 The scenarios with valid credentials are "good" (the default: valid WiFi
 and IO), "valid_io_only" and "valid_wifi_only" (the other half keeps the
 placeholders), "ssid_valid" (valid WiFi, fake IO credentials that pass
-provisioning) and "invalid_password" (as "ssid_valid", but with a wrong
-WiFi password). A test only needs the variables its scenario uses. The
+provisioning), "invalid_password" (as "ssid_valid", but with a wrong
+WiFi password), and "invalid_broker_url" and "invalid_broker_port" (as
+"good", but with a broker host that doesn't resolve, or the broker host
+with a port nothing listens on). A test only needs the variables its
+scenario uses. The
 scenarios in generated_secrets (e.g. "default", the firmware's placeholder
 secrets) need none, and may be invalid on purpose. Two scenarios have no
 secrets file at all: "no_secrets_file" flashes an empty LittleFS image, and
@@ -77,6 +80,8 @@ VALID_IO_ONLY = "valid_io_only"
 VALID_WIFI_ONLY = "valid_wifi_only"
 SSID_VALID = "ssid_valid"  # valid WiFi, FAKE_IO_CREDS
 INVALID_PASSWORD = "invalid_password"  # valid SSID, wrong password, FAKE_IO_CREDS
+INVALID_BROKER_URL = "invalid_broker_url"  # as GOOD_SECRETS, MISSING_BROKER_HOST
+INVALID_BROKER_PORT = "invalid_broker_port"  # as GOOD_SECRETS, CLOSED_BROKER_PORT
 DEFAULT_SECRETS = "default"
 NO_SECRETS_FILE = "no_secrets_file"  # an empty LittleFS image
 NO_FS_IMAGE = "no_fs_image"  # no image: the fs partition stays erased
@@ -97,6 +102,12 @@ def pytest_addoption(parser):
     group.addoption("--sudo", action="store_true", help="run uhubctl under 'sudo -n'")
     group.addoption("--serial-log-dir", type=Path,
                     help="write each test's serial capture here (default: tmp_path)")
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "slow: takes minutes, e.g. waits for the WDT to reboot "
+                   "the board (deselect with -m \"not slow\")")
 
 
 # --- Board and firmware ---------------------------------------------------
@@ -320,6 +331,11 @@ FAKE_IO_CREDS = BrokerCreds(host="io.adafruit.com", port=8883,
                             username="hil_fake_user", key="hil_fake_key")
 MISSING_SSID = "hil-no-such-network"
 WRONG_WIFI_PASSWORD = "invalidpassword"
+# A broker host that never resolves (RFC 2606 reserves .invalid), and a
+# port nothing listens on: ngrok gives tunnels high ports, so port 1
+# can't reach someone else's tunnel on a shared ngrok host.
+MISSING_BROKER_HOST = "hil-no-such-broker.invalid"
+CLOSED_BROKER_PORT = 1
 
 
 def _with_wifi(secrets, **changes):
@@ -394,6 +410,18 @@ def invalid_password_secrets(default_secrets, network_creds):
                       network_password=WRONG_WIFI_PASSWORD)
 
 
+@pytest.fixture(scope="session")
+def invalid_broker_url_secrets(valid_secrets):
+    """The good secrets, with io_url set to MISSING_BROKER_HOST."""
+    return {**valid_secrets, "io_url": MISSING_BROKER_HOST}
+
+
+@pytest.fixture(scope="session")
+def invalid_broker_port_secrets(valid_secrets):
+    """The good secrets, with io_port set to CLOSED_BROKER_PORT."""
+    return {**valid_secrets, "io_port": CLOSED_BROKER_PORT}
+
+
 # The scenarios with valid credentials, and their fixtures. They're looked
 # up only when a test uses them, so the other scenarios run without the
 # $HIL_* variables.
@@ -403,6 +431,8 @@ VALID_SCENARIOS = {
     VALID_WIFI_ONLY: "valid_wifi_secrets",
     SSID_VALID: "ssid_valid_secrets",
     INVALID_PASSWORD: "invalid_password_secrets",
+    INVALID_BROKER_URL: "invalid_broker_url_secrets",
+    INVALID_BROKER_PORT: "invalid_broker_port_secrets",
 }
 
 

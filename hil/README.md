@@ -1,6 +1,6 @@
 # HIL tests
 
-## Running the provisioning tests
+## Running tests
 
 From the repository root:
 
@@ -8,11 +8,12 @@ From the repository root:
 cd hil
 source venv/bin/activate
 
-# The "good", "valid_io_only" and "valid_wifi_only" scenarios need these:
 export HIL_IO_USERNAME=...
 export HIL_IO_KEY=...
 export HIL_WIFI_SSID=...
-export HIL_WIFI_PASSWORD=...        # can be empty for an open network
+export HIL_WIFI_PASSWORD=...
+export HIL_IO_URL=<num>.tcp.ngrok.io
+export HIL_IO_PORT=<port>
 
 pytest firmware/provisioning/ --log-cli-level=INFO
 ```
