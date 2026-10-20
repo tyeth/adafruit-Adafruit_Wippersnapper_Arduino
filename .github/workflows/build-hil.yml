@@ -6,9 +6,9 @@
 # one on the self-hosted HIL runner (label: wshil) and runs the hil/firmware
 # pytest suite against it.
 #
-# The HIL_* credentials (see hil/firmware/conftest.py) are read from the
-# runner's environment: set them in ~/actions-runner/.env on the HIL host and
-# restart the runner service.
+# The HIL_* credentials (see hil/firmware/conftest.py) are sourced from
+# ~/.config/hil/creds.env on the HIL host, the same file ~/.bashrc loads for
+# manual runs.
 name: WipperSnapper HIL CI
 
 on:
@@ -214,6 +214,12 @@ jobs:
       - name: Run HIL tests
         working-directory: hil
         run: |
+          creds=~/.config/hil/creds.env
+          if [ -f "$creds" ]; then
+            set -a; . "$creds"; set +a
+          else
+            echo "::warning::$creds not found; tests that need credentials will fail"
+          fi
           venv/bin/pytest firmware \
             --board "${{ matrix.board }}" \
             --firmware-dir "$FIRMWARE_DIR" \
