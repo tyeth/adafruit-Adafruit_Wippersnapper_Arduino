@@ -154,3 +154,32 @@ def test_ssid_not_found(board, generated_secrets, secrets_name, flashed_board,
 
     # 5. It halted before trying to connect.
     serial.assert_none(r"^Connecting to WiFi \(attempt")
+
+
+@pytest.mark.parametrize("secrets_name", ["ssid_not_found"], indirect=True)
+def test_hil_hides_ssid_scan_results(board, generated_secrets, secrets_name,
+                                     flashed_board, serial, power):
+    # --- Arrange ------------------------------------------------------
+    # 1. The chip was erased and flashed with the HIL firmware (built with
+    #    WS_HIL_BUILD) and secrets that pass provisioning but name a WiFi
+    #    network that doesn't exist.
+    assert (json.loads(flashed_board.secrets_path.read_text())
+            == generated_secrets[secrets_name])
+
+    # --- Act ----------------------------------------------------------
+    # 2. Power-cycle the board's hub port, checking that it really reset
+    #    (its serial port went away and came back), and capture the boot.
+    serial.port_reset(board.entry, timeout=15, confirm_off=True, **power)
+
+    # --- Assert -------------------------------------------------------
+    # 3. Wait for runNetFSM()'s halt: check_valid_ssid() has returned from
+    #    the not-found branch, where non-HIL builds dump every nearby
+    #    network, so the dump would already be in the log.
+    serial.expect(r"ERROR: Unable to find WiFi network, rebooting soon\.\.\.$",
+                  timeout=60)
+
+    # 4. The scan results weren't printed: HIL serial logs are public, so
+    #    nearby (neighbors') SSIDs must stay out of them. Match only the
+    #    list's heading so a regression's failure message doesn't itself
+    #    print an SSID.
+    serial.assert_none(r"WipperSnapper found these WiFi networks")
