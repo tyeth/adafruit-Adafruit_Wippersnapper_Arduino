@@ -1,10 +1,10 @@
-"""Network: runNetFSM() brings up WiFi through the board's network
-interface (src/platforms/) before connecting to the broker.
+"""
+HIL tests for Adafruit Wippersnapper firmware's networking functionality.
 
-The patterns hold for both v1 and v2 firmware, whose output differs in
-places: v2 prints no "Establishing network connection..." line, and its
-haltError() prints "ERROR [RESET]: <error>" on one line, where v1 counts
-down "ERROR [WDT RESET IN <n>]:" with the error on the next line.
+Exercises:
+- `src/Wippersnapper.cpp::NetworkFSM()`
+- `src/Wippersnapper.cpp::connect()`
+- `src/platforms/esp32_wifi.h`
 """
 
 import json

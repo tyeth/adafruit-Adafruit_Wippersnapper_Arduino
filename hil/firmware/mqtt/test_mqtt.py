@@ -1,11 +1,10 @@
-"""MQTT: once runNetFSM() has brought up WiFi, it connects to the broker
-in the secrets' io_url and io_port (FSM_NET_ESTABLISH_MQTT), and connect()
-prints "Connected to Adafruit IO".
+"""
+HIL tests for Adafruit Wippersnapper firmware's MQTT functionality.
 
-The broker comes from $HIL_IO_URL and $HIL_IO_PORT (default io.adafruit.com
-and 8883, see conftest.py), e.g. a local broker exposed through ngrok:
-
-    HIL_IO_URL=6.tcp.ngrok.io HIL_IO_PORT=24120 pytest firmware/mqtt/
+Exercises:
+- `src/Wippersnapper.cpp::NetworkFSM()`
+- `src/Wippersnapper.cpp::connect()`
+- `src/platforms/esp32_wifi.h`
 """
 
 import json

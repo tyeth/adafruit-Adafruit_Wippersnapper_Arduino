@@ -1,5 +1,9 @@
-"""Provisioning: the firmware reads secrets.json from LittleFS at boot."""
+"""
+HIL tests for Adafruit Wippersnapper firmware's provisioning functionality.
 
+Exercises:
+- `Wippersnapper_FS.cpp`
+"""
 import json
 import re
 import time
