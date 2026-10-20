@@ -136,6 +136,7 @@ public:
     }
 
     // Print scan results to serial console
+#ifndef WS_HIL_BUILD // HIL CI logs are public: don't leak nearby SSIDs
     WS_DEBUG_PRINTLN("WipperSnapper found these WiFi networks: ");
     for (int i = 0; i < n; ++i) {
       const char *scanSsid = WiFi.SSID(i);
@@ -148,6 +149,7 @@ public:
       WS_DEBUG_PRINTVAR(WiFi.RSSI(i));
       WS_DEBUG_PRINTLN("dB");
     }
+#endif
 
     // Hidden networks only reveal their SSID in reply to a directed probe.
     // Not gated on seeing a hidden network above, CYW43 support is unverified.

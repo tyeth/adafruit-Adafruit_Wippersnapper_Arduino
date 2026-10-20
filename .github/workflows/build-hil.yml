@@ -65,14 +65,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # Rebuild only when a source file under src/ changed: the finished
-      # firmware is cached by a hash of src/**/*.{cpp,c,h}. Bump v1 in the
+      # firmware is cached by a hash of src/**/*.{cpp,c,h}. Bump the vN in the
       # key to force a rebuild after other build inputs change.
       - name: Restore cached HIL firmware
         id: fw-cache
         uses: actions/cache/restore@v6
         with:
           path: hil-fw
-          key: hil-fw-v1-${{ matrix.board }}-${{ hashFiles('src/**/*.cpp', 'src/**/*.c', 'src/**/*.h') }}
+          key: hil-fw-v2-${{ matrix.board }}-${{ hashFiles('src/**/*.cpp', 'src/**/*.c', 'src/**/*.h') }}
       - if: steps.fw-cache.outputs.cache-hit != 'true'
         uses: actions/setup-python@v7
         with:
@@ -135,6 +135,11 @@ jobs:
         name: Install Dependencies
         run: |
           pip install esptool==4.6
+      # wippersnapper.h includes this header when present; WS_HIL_BUILD keeps
+      # nearby WiFi scan results out of the (public) HIL serial logs.
+      - if: steps.fw-cache.outputs.cache-hit != 'true'
+        name: Generate HIL config header
+        run: echo '#define WS_HIL_BUILD' > src/ws_hil_config.h
       - if: steps.fw-cache.outputs.cache-hit != 'true'
         name: build ${{ matrix.board }}
         run: python3 ci/build_platform.py ${{ matrix.board }} --build_timeout 48000
