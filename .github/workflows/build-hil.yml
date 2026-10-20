@@ -63,44 +63,60 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.hil-matrix.outputs.matrix) }}
     steps:
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@v7
+      # Rebuild only when a source file under src/ changed: the finished
+      # firmware is cached by a hash of src/**/*.{cpp,c,h}. Bump v1 in the
+      # key to force a rebuild after other build inputs change.
+      - name: Restore cached HIL firmware
+        id: fw-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: hil-fw
+          key: hil-fw-v1-${{ matrix.board }}-${{ hashFiles('src/**/*.cpp', 'src/**/*.c', 'src/**/*.h') }}
+      - if: steps.fw-cache.outputs.cache-hit != 'true'
+        uses: actions/setup-python@v7
         with:
           python-version: "3.x"
-      - uses: actions/checkout@v7
-      - name: Get WipperSnapper version
+      - if: steps.fw-cache.outputs.cache-hit != 'true'
+        name: Get WipperSnapper version
         run: |
           git fetch --prune --unshallow --tags
           git describe --dirty --tags --always
           echo >>$GITHUB_ENV WS_VERSION=$(git describe --dirty --tags --always)
-      - uses: actions/checkout@v7
+      - if: steps.fw-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v7
         with:
           repository: adafruit/ci-arduino
           ref: ci-wippersnapper
           path: ci
-      - name: Checkout Board Definitions
+      - if: steps.fw-cache.outputs.cache-hit != 'true'
+        name: Checkout Board Definitions
         uses: actions/checkout@v7
         with:
           repository: adafruit/Wippersnapper_Boards
           path: ws-boards
-      - name: Install CI-Arduino
+      - if: steps.fw-cache.outputs.cache-hit != 'true'
+        name: Install CI-Arduino
         run: bash ci/actions_install.sh
-      - name: Install extra Arduino libraries
+      - if: steps.fw-cache.outputs.cache-hit != 'true'
+        name: Install extra Arduino libraries
         run: |
           git clone --quiet https://github.com/pstolarz/Arduino-Temperature-Control-Library.git /home/runner/Arduino/libraries/Arduino-Temperature-Control-Library
           git clone --quiet https://github.com/pstolarz/OneWireNg.git /home/runner/Arduino/libraries/OneWireNg
-      - name: Download stable Nanopb
+      - if: steps.fw-cache.outputs.cache-hit != 'true'
+        name: Download stable Nanopb
         id: download-nanopb
         continue-on-error: true
         run: |
           wget https://jpa.kapsi.fi/nanopb/download/nanopb-0.4.9.2.tar.gz
-      - if: ${{ failure() || steps.download-nanopb.outcome != 'success' }}
+      - if: ${{ steps.fw-cache.outputs.cache-hit != 'true' && (failure() || steps.download-nanopb.outcome != 'success') }}
         name: Restore cached nanopb
         id: cache-nanopb-restore
         uses: actions/cache/restore@v6
         with:
           path: ./nanopb-0.4.9.2.tar.gz
           key: nanopb-0.4.9.2.tar.gz
-      - if: ${{ steps.download-nanopb.outcome == 'success' }}
+      - if: ${{ steps.fw-cache.outputs.cache-hit != 'true' && (steps.download-nanopb.outcome == 'success') }}
         name: Save nanopb to cache
         id: cache-nanopb-save
         uses: actions/cache/save@v6
@@ -108,37 +124,44 @@ jobs:
         with:
           path: ./nanopb-0.4.9.2.tar.gz
           key: nanopb-0.4.9.2.tar.gz
-      - name: Install stable Nanopb
+      - if: steps.fw-cache.outputs.cache-hit != 'true'
+        name: Install stable Nanopb
         run: |
           tar -xf nanopb-0.4.9.2.tar.gz
           # Copy files to WipperSnapper's src/nanopb directory
           cp nanopb/pb_common.* nanopb/pb_encode.* nanopb/pb_decode.* src/nanopb
           mv nanopb/pb.h src/nanopb/nanopb.pb.h
-      - name: Install Dependencies
+      - if: steps.fw-cache.outputs.cache-hit != 'true'
+        name: Install Dependencies
         run: |
           pip install esptool==4.6
-      - name: build ${{ matrix.board }}
+      - if: steps.fw-cache.outputs.cache-hit != 'true'
+        name: build ${{ matrix.board }}
         run: python3 ci/build_platform.py ${{ matrix.board }} --build_timeout 48000
-      - name: Check artifacts
+      - if: steps.fw-cache.outputs.cache-hit != 'true'
+        name: Check artifacts
         run: |
           ls examples/Wippersnapper_demo/build/*
-      - name: Rename build artifacts to reflect the platform name
+      - if: steps.fw-cache.outputs.cache-hit != 'true'
+        name: Rename build artifacts to reflect the platform name
         run: |
           mv examples/Wippersnapper_demo/build/*/Wippersnapper_demo.ino.bin wippersnapper.${{ matrix.board }}.littlefs.${{ env.WS_VERSION }}.bin
           mv examples/Wippersnapper_demo/build/*/Wippersnapper_demo.ino.bootloader.bin wippersnapper.${{ matrix.board }}.littlefs.${{ env.WS_VERSION }}.bootloader.bin
           mv examples/Wippersnapper_demo/build/*/Wippersnapper_demo.ino.partitions.bin wippersnapper.${{ matrix.board }}.littlefs.${{ env.WS_VERSION }}.partitions.bin
-      - name: Check boot_app0 file existence (esp32 built from core, not-source)
+      - if: steps.fw-cache.outputs.cache-hit != 'true'
+        name: Check boot_app0 file existence (esp32 built from core, not-source)
         id: check_files
         uses: andstor/file-existence-action@v3
         with:
           files: "/home/runner/.arduino15/packages/esp32/hardware/esp32/*/tools/partitions/boot_app0.bin"
-      - name: boot_app0 file from arduino-cli core
-        if: steps.check_files.outputs.files_exists == 'true'
+      - if: ${{ steps.fw-cache.outputs.cache-hit != 'true' && (steps.check_files.outputs.files_exists == 'true') }}
+        name: boot_app0 file from arduino-cli core
         run: mv /home/runner/.arduino15/packages/esp32/hardware/esp32/*/tools/partitions/boot_app0.bin wippersnapper.${{ matrix.board }}.littlefs.${{ env.WS_VERSION }}.boot_app0.bin
-      - name: boot_app0 file from esp32 source bsp
-        if: steps.check_files.outputs.files_exists == 'false'
+      - if: ${{ steps.fw-cache.outputs.cache-hit != 'true' && (steps.check_files.outputs.files_exists == 'false') }}
+        name: boot_app0 file from esp32 source bsp
         run: mv /home/runner/Arduino/hardware/espressif/esp32/tools/partitions/boot_app0.bin wippersnapper.${{ matrix.board }}.littlefs.${{ env.WS_VERSION }}.boot_app0.bin
-      - name: Get Board Flash Parameters
+      - if: steps.fw-cache.outputs.cache-hit != 'true'
+        name: Get Board Flash Parameters
         id: get_board_json
         run: |
           board_name=${{ matrix.board }}
@@ -152,17 +175,27 @@ jobs:
             echo $content
             echo EOF
           } >> "$GITHUB_OUTPUT"
-      - name: Create combined binary using Esptool merge_bin
+      - if: steps.fw-cache.outputs.cache-hit != 'true'
+        name: Create combined binary using Esptool merge_bin
         run: |
+          mkdir -p hil-fw
           python3 -m esptool --chip ${{fromJson(steps.get_board_json.outputs.boardJson).esptool.chip}} merge_bin \
             --flash_mode ${{fromJson(steps.get_board_json.outputs.boardJson).esptool.flashMode}} \
             --flash_freq ${{fromJson(steps.get_board_json.outputs.boardJson).esptool.flashFreq}} \
             --flash_size ${{fromJson(steps.get_board_json.outputs.boardJson).esptool.flashSize}} \
-            -o wippersnapper.${{ matrix.board }}.littlefs.${{ env.WS_VERSION }}.combined.bin \
+            -o hil-fw/wippersnapper.${{ matrix.board }}.littlefs.${{ env.WS_VERSION }}.combined.bin \
             ${{ matrix.offset }} wippersnapper.${{ matrix.board }}.littlefs.${{ env.WS_VERSION }}.bootloader.bin \
             0x8000 wippersnapper.${{ matrix.board }}.littlefs.${{ env.WS_VERSION }}.partitions.bin \
             0xe000 wippersnapper.${{ matrix.board }}.littlefs.${{ env.WS_VERSION }}.boot_app0.bin \
             0x10000 wippersnapper.${{ matrix.board }}.littlefs.${{ env.WS_VERSION }}.bin
+          cp wippersnapper.${{ matrix.board }}.littlefs.${{ env.WS_VERSION }}.partitions.bin hil-fw/
+      - name: Save HIL firmware to cache
+        if: steps.fw-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: hil-fw
+          # The key hashed before the build: the nanopb step writes into src/.
+          key: ${{ steps.fw-cache.outputs.cache-primary-key }}
       - name: Upload HIL firmware
         uses: actions/upload-artifact@v7
         with:
@@ -170,8 +203,8 @@ jobs:
           retention-days: 7
           if-no-files-found: error
           path: |
-            wippersnapper.${{ matrix.board }}.littlefs.${{ env.WS_VERSION }}.combined.bin
-            wippersnapper.${{ matrix.board }}.littlefs.${{ env.WS_VERSION }}.partitions.bin
+            hil-fw/*.combined.bin
+            hil-fw/*.partitions.bin
 
   hil-test:
     name: 🧪HIL ${{ matrix.board }}
