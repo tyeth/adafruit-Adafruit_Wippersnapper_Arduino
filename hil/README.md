@@ -17,6 +17,7 @@ export HIL_PROTOMQ_HOST=<this host's IP, as the DUT sees it>  # default: LAN IP
 export HIL_PROTOMQ_PORT=1884                                 # MQTT port
 export HIL_PROTOMQ_HTTP_PORT=5173                            # API/web UI port
 export HIL_PROTOMQ_DIR=~/ProtoMQ                             # checkout
+export HIL_WS_BOARDS_DIR=~/Wippersnapper_Boards               # board definitions
 
 pytest firmware/provisioning/ --log-cli-level=INFO
 ```

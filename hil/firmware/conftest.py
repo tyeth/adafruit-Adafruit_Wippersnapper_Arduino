@@ -29,6 +29,8 @@ set on the HIL host, never from the repo:
                                      default a free port
     HIL_PROTOMQ_DIR                  optional, ProtoMQ's checkout, default
                                      ~/ProtoMQ
+    HIL_WS_BOARDS_DIR                optional, the Wippersnapper_Boards
+                                     checkout, default ~/Wippersnapper_Boards
 
 The valid IO credentials point the DUT at a ProtoMQ broker on this host,
 which the protomq fixture starts for the test and stops after it, with
@@ -66,6 +68,12 @@ or a test ("provisioning/test_secrets.py::test_default_secrets"):
 
 Tests outside run_tests are deselected. Selection on the command line
 (paths, -k) narrows this further; it can't widen it.
+
+The board entry's wippersnapper_boards_id is the firmware's BOARD_ID,
+which names the board's definition in Wippersnapper_Boards (the
+board_definition fixture), e.g.:
+
+    "wippersnapper_boards_id": "feather-esp32-v2"
 """
 
 import copy
@@ -87,6 +95,7 @@ import hil_board_utils  # noqa: E402
 import hil_protomq  # noqa: E402
 
 DEFAULT_BOARDS = HIL_DIR / "hil-boards.json"
+DEFAULT_WS_BOARDS_DIR = "~/Wippersnapper_Boards"
 SECRETS_SUFFIX = ".secrets.json"
 GOOD_SECRETS = "good"  # valid WiFi and IO
 VALID_IO_ONLY = "valid_io_only"
@@ -264,6 +273,25 @@ def firmware(pytestconfig, board):
     directory = Path(directory)
     return Firmware(_find_one(directory, "*.combined.bin"),
                     _find_one(directory, "*.partitions.bin"))
+
+
+@pytest.fixture(scope="session")
+def board_definition(board):
+    """The board's definition.json, boards/<id>/definition.json in the
+    Wippersnapper_Boards checkout at $HIL_WS_BOARDS_DIR, where <id> is the
+    board entry's wippersnapper_boards_id."""
+    boards_dir = _env("HIL_WS_BOARDS_DIR", required=False) or DEFAULT_WS_BOARDS_DIR
+    try:
+        definition = hil_board_utils.load_board_definition(
+            boards_dir, board.entry.get("wippersnapper_boards_id"))
+    except hil_board_utils.BoardDefinitionError as e:
+        pytest.fail(f"board '{board.name}': {e} (set wippersnapper_boards_id "
+                    "in the board entry to the firmware's BOARD_ID)",
+                    pytrace=False)
+    log.info("board definition: %s at Wippersnapper_Boards %s",
+             definition.path, definition.commit)
+    return definition
+
 
 
 # --- Secrets and credentials ----------------------------------------------

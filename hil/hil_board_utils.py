@@ -98,6 +98,10 @@ class SecretsError(HilBoardUtilsError):
     pass
 
 
+class BoardDefinitionError(HilBoardUtilsError):
+    pass
+
+
 class MklittlefsError(HilBoardUtilsError):
     pass
 
@@ -340,6 +344,45 @@ def load_secrets(path):
     except SecretsError as e:
         raise SecretsError(f"{path}: {e}") from e
     return secrets
+
+
+# --- Board definitions ----------------------------------------------------
+
+
+@dataclass(frozen=True)
+class BoardDefinition:
+    """A board's definition.json from a Wippersnapper_Boards checkout."""
+    board_id: str     # the firmware's BOARD_ID, e.g. "feather-esp32-v2"
+    path: Path
+    commit: str       # the checkout's git commit, None if it isn't a repo
+    definition: dict
+
+
+def load_board_definition(boards_dir, board_id):
+    """Read boards/<board_id>/definition.json from the Wippersnapper_Boards
+    checkout in boards_dir, checking its boardName is board_id."""
+    if not isinstance(board_id, str) or not board_id.strip():
+        raise BoardDefinitionError(
+            f"board id must be a non-empty string, got {board_id!r}")
+    boards_dir = Path(boards_dir).expanduser()
+    path = boards_dir / "boards" / board_id / "definition.json"
+    try:
+        definition = json.loads(path.read_text())
+    except OSError as e:
+        raise BoardDefinitionError(f"cannot read board definition: {e}") from e
+    except json.JSONDecodeError as e:
+        raise BoardDefinitionError(f"{path} is not valid JSON: {e}") from e
+    if not isinstance(definition, dict) or definition.get("boardName") != board_id:
+        name = definition.get("boardName") if isinstance(definition, dict) else None
+        raise BoardDefinitionError(
+            f"{path}: boardName is {name!r}, not {board_id!r}")
+    try:
+        commit = subprocess.run(
+            ["git", "-C", str(boards_dir), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        commit = None
+    return BoardDefinition(board_id, path, commit, definition)
 
 
 # --- mklittlefs -----------------------------------------------------------

@@ -85,7 +85,7 @@ def test_mqtt_client_connected_to_protomq(board, secrets_name, flashed_board,
                   timeout=MQTT_CONNECT_TIMEOUT)
 
     # 6. ProtoMQ lists the DUT as a connected client.
-    protomq.wait_for_client(uid, timeout=60)
+    protomq.expect_client(uid, timeout=60)
 
 
 def expect_mqtt_gives_up(serial):
