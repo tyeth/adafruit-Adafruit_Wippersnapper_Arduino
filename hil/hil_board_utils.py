@@ -792,16 +792,22 @@ def wait_for_port(entry, timeout=15, interval=0.5):
 
 
 def wait_for_port_gone(entry, timeout=10, interval=0.2):
-    """Poll until the board's serial port is gone (e.g. after power off)."""
+    """Poll until the board has no serial port left (e.g. after power off).
+
+    Every serial port at the board's location counts, so a board with two
+    serial ports is only gone once both are.
+    """
+    validate_board_entry(entry)
+    loc = entry["location"]
+    path = usb_device_path(loc["hub"], loc["port"])
     deadline = time.monotonic() + timeout
     while True:
-        try:
-            port = find_port(entry, refresh=True)
-        except PortError:
+        ports = match_serial_ports(list_serial_ports(), path)
+        if not ports:
             clear_port(entry["board"])
             return
         if time.monotonic() >= deadline:
-            raise PortError(f"board '{entry['board']}': {port} still present "
+            raise PortError(f"board '{entry['board']}': {', '.join(ports)} still present "
                             f"{timeout}s after power off")
         time.sleep(interval)
 

@@ -4,6 +4,7 @@ hub port's power with uhubctl."""
 import os
 import re
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -113,3 +114,14 @@ def test_wait_for_port_times_out(board_entry):
     with pytest.raises(hbu.PortError, match="no serial port"):
         hbu.wait_for_port(entry, timeout=1, interval=0.2)
     assert 1 <= time.monotonic() - start < 3
+
+
+def test_wait_for_port_gone_waits_for_every_port(monkeypatch):
+    entry = {"board": "two_ports", "location": {"hub": "1-1", "port": 2}}
+    ports = [SimpleNamespace(device=f"/dev/ttyACM{i}", location=f"1-1.2:1.{i}")
+             for i in (0, 2)]
+    monkeypatch.setattr(hbu, "list_serial_ports", lambda: ports)
+    with pytest.raises(hbu.PortError, match="still present"):
+        hbu.wait_for_port_gone(entry, timeout=0.5)
+    monkeypatch.setattr(hbu, "list_serial_ports", lambda: [])
+    hbu.wait_for_port_gone(entry, timeout=0.5)
