@@ -71,7 +71,7 @@ def test_mqtt_client_connected_to_protomq(board, secrets_name, flashed_board,
     serial.port_reset(board.entry, timeout=15, confirm_off=True, **power)
 
     # --- Assert -------------------------------------------------------
-    # 3. connect() prints the Device UID, which is its MQTT client ID.
+    # 3. connect() prints "Device UID: io-wipper-<uid>", its MQTT client ID.
     uid = device_uid(timeout=60)
 
     # 4. It's printed before the WiFi connect, so the broker doesn't list

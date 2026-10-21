@@ -7,12 +7,15 @@ docs/api/README.md.
         pmq.wait_for_client("io-wipper-...", timeout=5)
 """
 
+import ctypes
 import json
 import logging
 import os
 import shutil
+import signal
 import socket
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -22,6 +25,8 @@ DEFAULT_DIR = "~/ProtoMQ"
 DEFAULT_MQTT_PORT = 1884
 
 log = logging.getLogger("hil.protomq")
+
+PR_SET_PDEATHSIG = 1  # <linux/prctl.h>
 
 
 class ProtoMQError(Exception):
@@ -126,11 +131,24 @@ def check_port_free(port):
                 f"running? (pgrep -af 'node main.js')") from e
 
 
+def _die_with_parent(parent_pid):
+    """A preexec_fn for Popen that has Linux SIGKILL the child when
+    parent_pid dies, even by SIGKILL, when no teardown runs."""
+    def preexec():
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(PR_SET_PDEATHSIG, signal.SIGKILL) != 0:
+            os._exit(127)
+        if os.getppid() != parent_pid:  # it died before the prctl
+            os._exit(127)
+    return preexec
+
+
 class ProtoMQServer(ProtoMQ):
     """A ProtoMQ broker run from its checkout in directory, with MQTT on
     mqtt_port, the HTTP API and web UI on http_port (default a free port)
     and the WebSocket on a free port, its output written to log_path. A
-    context manager: start() on enter, stop() on exit."""
+    context manager: start() on enter, stop() on exit. On Linux, the
+    broker is also killed if this process dies without calling stop()."""
 
     def __init__(self, directory=DEFAULT_DIR, mqtt_port=DEFAULT_MQTT_PORT,
                  http_port=None, log_path=None, node=None):
@@ -163,7 +181,9 @@ class ProtoMQServer(ProtoMQ):
                 [self.node, "main.js", f"--mqtt-port={self.mqtt_port}",
                  f"--ws-port={self.ws_port}", f"--http-port={self.http_port}"],
                 cwd=self.directory, stdin=subprocess.DEVNULL, stdout=log,
-                stderr=subprocess.STDOUT, env={**os.environ, "FORCE_COLOR": "0"})
+                stderr=subprocess.STDOUT, env={**os.environ, "FORCE_COLOR": "0"},
+                preexec_fn=(_die_with_parent(os.getpid())
+                            if sys.platform == "linux" else None))
         finally:
             if log is not subprocess.DEVNULL:
                 log.close()  # the child has its own copy
