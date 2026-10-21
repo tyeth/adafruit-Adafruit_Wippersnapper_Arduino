@@ -25,12 +25,13 @@ WS_TIMEOUT_WDT = 60
 
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 def test_mqtt_connected(board, valid_secrets, broker_creds, secrets_name,
-                        flashed_board, serial, power):
+                        flashed_board, serial, power, protomq):
     # --- Arrange ------------------------------------------------------
     # 1. The chip was erased and flashed with the firmware and secrets
-    #    holding the HIL WiFi network and IO credentials, and the broker's
-    #    io_url and io_port, from the $HIL_* variables. (Compared outside
-    #    the assert so a failure doesn't print the credentials.)
+    #    holding the HIL WiFi network and IO credentials, from the $HIL_*
+    #    variables, and the io_url and io_port of the ProtoMQ broker the
+    #    protomq fixture started on this host. (Compared outside the
+    #    assert so a failure doesn't print the credentials.)
     matches = (json.loads(flashed_board.secrets_path.read_text())
                == valid_secrets)
     assert matches
@@ -54,6 +55,37 @@ def test_mqtt_connected(board, valid_secrets, broker_creds, secrets_name,
     serial.expect(r"^Connecting to AIO MQTT \(attempt #0\)$", timeout=30)
     serial.expect(r"^Connected to Adafruit IO$",
                   timeout=MQTT_CONNECT_TIMEOUT)
+
+
+@pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
+def test_mqtt_client_connected_to_protomq(board, secrets_name, flashed_board,
+                                          serial, power, device_uid, protomq):
+    # --- Arrange ------------------------------------------------------
+    # 1. The chip was erased and flashed with the firmware and the good
+    #    secrets, whose io_url and io_port are those of the ProtoMQ broker
+    #    the protomq fixture started on this host, with no clients yet.
+
+    # --- Act ----------------------------------------------------------
+    # 2. Power-cycle the DUT's hub port, checking that it really reset
+    #    (its serial port went away and came back), and capture the boot.
+    serial.port_reset(board.entry, timeout=15, confirm_off=True, **power)
+
+    # --- Assert -------------------------------------------------------
+    # 3. connect() prints the Device UID, which is its MQTT client ID.
+    uid = device_uid(timeout=60)
+
+    # 4. It's printed before the WiFi connect, so the broker doesn't list
+    #    the DUT yet: a session listed now would be from the boot after
+    #    flashing, not this one.
+    assert not protomq.is_connected(uid), f"{uid} is already on the broker"
+
+    # 5. runNetFSM() connects to WiFi and the broker.
+    serial.expect(r"^Connected to WiFi!$", timeout=WIFI_CONNECT_TIMEOUT)
+    serial.expect(r"^Connected to Adafruit IO$",
+                  timeout=MQTT_CONNECT_TIMEOUT)
+
+    # 6. ProtoMQ lists the DUT as a connected client.
+    protomq.wait_for_client(uid, timeout=60)
 
 
 def expect_mqtt_gives_up(serial):

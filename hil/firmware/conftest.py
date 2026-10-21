@@ -9,6 +9,7 @@ Fixture chain:
 
     board (session) -> flashed_board (function) -> serial (function)
                                                 -> device_uid (function)
+                                                -> protomq (function)
 
 Every test starts from a clean chip: flashed_board erases the whole flash
 (firmware, NVS, filesystem), then flashes the firmware and a LittleFS image
@@ -21,7 +22,18 @@ set on the HIL host, never from the repo:
     HIL_IO_USERNAME, HIL_IO_KEY      required by the scenarios with valid IO
     HIL_WIFI_SSID, HIL_WIFI_PASSWORD required by the scenarios with valid WiFi
                                      (the password may be empty: open network)
-    HIL_IO_URL, HIL_IO_PORT          optional, default io.adafruit.com and 8883
+    HIL_PROTOMQ_HOST                 optional, the address the DUT reaches
+                                     this host at, default its LAN IP
+    HIL_PROTOMQ_PORT                 optional, ProtoMQ's MQTT port, default 1884
+    HIL_PROTOMQ_HTTP_PORT            optional, ProtoMQ's API and web UI port,
+                                     default a free port
+    HIL_PROTOMQ_DIR                  optional, ProtoMQ's checkout, default
+                                     ~/ProtoMQ
+
+The valid IO credentials point the DUT at a ProtoMQ broker on this host,
+which the protomq fixture starts for the test and stops after it, with
+its output in <test>.protomq.log next to the serial log. A test that
+needs the broker must request protomq; without it nothing listens.
 
 The scenarios with valid credentials are "good" (the default: valid WiFi
 and IO), "valid_io_only" and "valid_wifi_only" (the other half keeps the
@@ -72,6 +84,7 @@ FIRMWARE_DIR = Path(__file__).resolve().parent
 HIL_DIR = FIRMWARE_DIR.parent
 sys.path.insert(0, str(HIL_DIR))
 import hil_board_utils  # noqa: E402
+import hil_protomq  # noqa: E402
 
 DEFAULT_BOARDS = HIL_DIR / "hil-boards.json"
 SECRETS_SUFFIX = ".secrets.json"
@@ -101,7 +114,8 @@ def pytest_addoption(parser):
     group.addoption("--uhubctl", help="path to uhubctl, used if not found on PATH")
     group.addoption("--sudo", action="store_true", help="run uhubctl under 'sudo -n'")
     group.addoption("--serial-log-dir", type=Path,
-                    help="write each test's serial capture here (default: tmp_path)")
+                    help="write each test's serial and ProtoMQ logs here "
+                         "(default: tmp_path)")
 
 
 def pytest_configure(config):
@@ -281,19 +295,60 @@ def _env(name, required=True, allow_empty=False):
     return value
 
 
+def _env_port(name, default=None):
+    """The port number in the environment variable name, or default if
+    it's unset."""
+    port = _env(name, required=False)
+    if port is None:
+        return default
+    if not port.isdigit() or not 1 <= int(port) <= 65535:
+        pytest.fail(f"${name} must be a port number, got {port!r}", pytrace=False)
+    return int(port)
+
+
 @pytest.fixture(scope="session")
 def broker_creds():
-    """The valid IO credentials, from $HIL_IO_*."""
-    port = _env("HIL_IO_PORT", required=False) or "8883"
-    if not port.isdigit() or not 1 <= int(port) <= 65535:
-        pytest.fail(f"$HIL_IO_PORT must be a port number, got {port!r}",
-                    pytrace=False)
+    """The valid IO credentials, from $HIL_IO_*, for the ProtoMQ broker
+    the protomq fixture runs on this host: $HIL_PROTOMQ_HOST (default this
+    host's LAN IP) and $HIL_PROTOMQ_PORT."""
+    host = _env("HIL_PROTOMQ_HOST", required=False)
+    if host is None:
+        try:
+            host = hil_protomq.lan_ip()
+        except hil_protomq.ProtoMQError as e:
+            pytest.fail(f"{e}: set $HIL_PROTOMQ_HOST", pytrace=False)
     return BrokerCreds(
-        host=_env("HIL_IO_URL", required=False) or "io.adafruit.com",
-        port=int(port),
+        host=host,
+        port=_env_port("HIL_PROTOMQ_PORT", hil_protomq.DEFAULT_MQTT_PORT),
         username=_env("HIL_IO_USERNAME"),
         key=_env("HIL_IO_KEY"),
     )
+
+
+@pytest.fixture
+def protomq(flashed_board, broker_creds, request, pytestconfig, tmp_path):
+    """A ProtoMQ broker for this test, run from $HIL_PROTOMQ_DIR on
+    broker_creds' port, and a client for its HTTP API, on
+    $HIL_PROTOMQ_HTTP_PORT if set. It starts after
+    flashed_board, so nothing from an earlier test is on it, and stops
+    when the test ends; its output goes to <test>.protomq.log."""
+    log_dir = Path(pytestconfig.getoption("serial_log_dir") or tmp_path)
+    server = hil_protomq.ProtoMQServer(
+        _env("HIL_PROTOMQ_DIR", required=False) or hil_protomq.DEFAULT_DIR,
+        mqtt_port=broker_creds.port,
+        http_port=_env_port("HIL_PROTOMQ_HTTP_PORT"),
+        log_path=log_dir / f"{request.node.name}.protomq.log")
+    try:
+        status = server.start()
+    except hil_protomq.ProtoMQError as e:
+        pytest.fail(f"cannot start ProtoMQ: {e}", pytrace=False)
+    source = status.get("protobufs", {}).get("source") or {}
+    log.info("protomq %s started from %s: mqtt %s:%d, api %s, protos %s",
+             status.get("protomq", {}).get("gitSha"), server.directory,
+             broker_creds.host, server.mqtt_port, server.url, source.get("commit"))
+    yield server
+    server.stop()
+    log.info("protomq log: %s", server.log_path)
 
 
 @pytest.fixture(scope="session")
@@ -332,8 +387,7 @@ FAKE_IO_CREDS = BrokerCreds(host="io.adafruit.com", port=8883,
 MISSING_SSID = "hil-no-such-network"
 WRONG_WIFI_PASSWORD = "invalidpassword"
 # A broker host that never resolves (RFC 2606 reserves .invalid), and a
-# port nothing listens on: ngrok gives tunnels high ports, so port 1
-# can't reach someone else's tunnel on a shared ngrok host.
+# port nothing listens on at the broker's host.
 MISSING_BROKER_HOST = "hil-no-such-broker.invalid"
 CLOSED_BROKER_PORT = 1
 
@@ -524,9 +578,9 @@ def serial(board, flashed_board, request, pytestconfig, tmp_path):
 @pytest.fixture
 def device_uid(serial):
     """device_uid(timeout) -> the Device UID the firmware prints at the start
-    of connect(), the client ID it uses on the broker. Call it after the
-    test's Act step, and after expecting any earlier boot lines: it moves the
-    serial cursor past the UID line. Scenarios that halt in provision() never
+    of connect(), io-wipper-<uid>, the client ID it uses on the broker.
+    Call it after the test's Act step, and after expecting any earlier boot
+    lines: it moves the serial cursor past the UID line. Scenarios that halt in provision() never
     print it."""
     def read(timeout=30):
         uid = serial.expect(DEVICE_UID_RE, timeout=timeout).group(1)

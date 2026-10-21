@@ -12,8 +12,11 @@ export HIL_IO_USERNAME=...
 export HIL_IO_KEY=...
 export HIL_WIFI_SSID=...
 export HIL_WIFI_PASSWORD=...
-export HIL_IO_URL=<num>.tcp.ngrok.io
-export HIL_IO_PORT=<port>
+# optional: the tests start a ProtoMQ broker on this host for each test
+export HIL_PROTOMQ_HOST=<this host's IP, as the DUT sees it>  # default: LAN IP
+export HIL_PROTOMQ_PORT=1884                                 # MQTT port
+export HIL_PROTOMQ_HTTP_PORT=5173                            # API/web UI port
+export HIL_PROTOMQ_DIR=~/ProtoMQ                             # checkout
 
 pytest firmware/provisioning/ --log-cli-level=INFO
 ```
