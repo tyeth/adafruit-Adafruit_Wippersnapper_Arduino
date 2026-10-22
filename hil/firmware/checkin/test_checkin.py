@@ -17,6 +17,9 @@ MQTT_CONNECT_TIMEOUT = 120
 # How long after connecting the DUT may take to send its checkin.Request,
 # and to finish the checkin once the broker answers.
 CHECKIN_TIMEOUT = 30
+# The firmware's WDT timeout (WS_TIMEOUT_WDT), as in test_mqtt.py: after a
+# halt, the WDT reboots the board within this.
+WS_TIMEOUT_WDT = 60
 
 
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
@@ -67,13 +70,14 @@ def test_checkin_response_ok(board, board_definition, secrets_name,
     serial.expect(r"^Completed checkin process!$", timeout=CHECKIN_TIMEOUT)
 
 
-def check_checkin_rejected(response_code, board, board_definition, serial,
-                           power, device_uid, protomq):
-    """The DUT rejects a checkin.Response holding response_code, a
-    non-R_OK checkin.Response.Response, and never completes the checkin."""
+@pytest.mark.slow
+@pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
+def test_checkin_response_board_not_found(board, board_definition,
+                                          secrets_name, flashed_board, serial,
+                                          power, device_uid, protomq):
     # --- Arrange ------------------------------------------------------
-    # Create a checkin.Response that isn't R_OK
-    response = {"response": response_code}
+    # Create a checkin.Response holding R_BOARD_NOT_FOUND
+    response = {"response": "R_BOARD_NOT_FOUND"}
     protomq.enable_checkin_fallback(False)
     protomq.set_autorespond(
         "checkin.request", {"checkin": {"response": response}},
@@ -83,6 +87,9 @@ def check_checkin_rejected(response_code, board, board_definition, serial,
     serial.port_reset(board.entry, timeout=15, confirm_off=True, **power)
 
     # --- Assert -------------------------------------------------------
+    # The first boot came from the power cycle
+    serial.expect(r"^ESP Reset Reason: PowerOn$", timeout=30)
+
     # Capture the DUT's UID and tell the broker to track its messages
     uid = device_uid(timeout=60)
     assert not protomq.is_connected(uid), f"{uid} is already on the broker"
@@ -99,34 +106,69 @@ def check_checkin_rejected(response_code, board, board_definition, serial,
         match={"hardwareUid": board_definition.board_id},
         timeout=CHECKIN_TIMEOUT)
 
-    # Broker responds with the non-R_OK checkin.Response
+    # Broker responds with the R_BOARD_NOT_FOUND checkin.Response
     protomq.expect_b2d_message(uid, "checkin.response",
                                match=response, timeout=5)
 
-    # DUT rejects the checkin.Response within CheckinModel::ProcessResponse()
-    serial.expect(r"^\[checkin\] ERROR: Invalid checkin_Response!$",
-                  timeout=CHECKIN_TIMEOUT)
-    serial.expect(r"^ERROR: Unable to decode Checkin Response message$",
-                  timeout=5)
-
-    # DUT never sends checkin.Complete, nor finishes the checkin
-    protomq.assert_no_d2b_message(uid, "checkin.complete",
-                                  within=CHECKIN_TIMEOUT)
+    # DUT rejects the checkin.Response and halts to reboot
+    serial.expect(r"^\[checkin\] ERROR: Board not found in definition "
+                  r"index$", timeout=CHECKIN_TIMEOUT)
+    serial.expect(r"ERROR \[RESET\]: Invalid checkin response, rebooting "
+                  r"soon\.\.\.$", timeout=CHECKIN_TIMEOUT)
     serial.assert_none(r"^Completed checkin process!$")
 
-
-@pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
-def test_checkin_response_board_not_found(board, board_definition,
-                                          secrets_name, flashed_board, serial,
-                                          power, device_uid, protomq):
-    check_checkin_rejected("R_BOARD_NOT_FOUND", board, board_definition,
-                           serial, power, device_uid, protomq)
+    # DUT reboots within the WS_TIMEOUT_WDT (+15 seconds buffer) timeframe
+    serial.expect(r"^rst:0x[0-9a-f]+ ", timeout=WS_TIMEOUT_WDT + 15)
+    serial.expect(r"^ESP Reset Reason: ", timeout=30)
 
 
-@pytest.mark.skip(reason="waiting to test on new firmware")
+@pytest.mark.slow
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 def test_checkin_response_unspecified(board, board_definition, secrets_name,
                                       flashed_board, serial, power,
                                       device_uid, protomq):
-    check_checkin_rejected("R_UNSPECIFIED", board, board_definition, serial,
-                           power, device_uid, protomq)
+    # --- Arrange ------------------------------------------------------
+    # Create a checkin.Response holding R_UNSPECIFIED
+    response = {"response": "R_UNSPECIFIED"}
+    protomq.enable_checkin_fallback(False)
+    protomq.set_autorespond(
+        "checkin.request", {"checkin": {"response": response}},
+        match={"hardwareUid": board_definition.board_id})
+
+    # --- Act ----------------------------------------------------------
+    serial.port_reset(board.entry, timeout=15, confirm_off=True, **power)
+
+    # --- Assert -------------------------------------------------------
+    # The first boot came from the power cycle
+    serial.expect(r"^ESP Reset Reason: PowerOn$", timeout=30)
+
+    # Capture the DUT's UID and tell the broker to track its messages
+    uid = device_uid(timeout=60)
+    assert not protomq.is_connected(uid), f"{uid} is already on the broker"
+    protomq.track(uid)
+
+    # Ensure runNetFSM() connects to WiFi and the broker
+    serial.expect(r"^Connected to WiFi!$", timeout=WIFI_CONNECT_TIMEOUT)
+    serial.expect(r"^Connected to Adafruit IO$", timeout=MQTT_CONNECT_TIMEOUT)
+    protomq.expect_client(uid, timeout=5)
+
+    # DUT sends checkin.Request, broker should receive it
+    protomq.expect_d2b_message(
+        uid, "checkin.request",
+        match={"hardwareUid": board_definition.board_id},
+        timeout=CHECKIN_TIMEOUT)
+
+    # Broker responds with the R_UNSPECIFIED checkin.Response
+    protomq.expect_b2d_message(uid, "checkin.response",
+                               match=response, timeout=5)
+
+    # DUT rejects the checkin.Response and halts to reboot
+    serial.expect(r"^\[checkin\] ERROR: Unspecified checkin response from "
+                  r"broker$", timeout=CHECKIN_TIMEOUT)
+    serial.expect(r"ERROR \[RESET\]: Invalid checkin response, rebooting "
+                  r"soon\.\.\.$", timeout=CHECKIN_TIMEOUT)
+    serial.assert_none(r"^Completed checkin process!$")
+
+    # DUT reboots within the WS_TIMEOUT_WDT (+15 seconds buffer) timeframe
+    serial.expect(r"^rst:0x[0-9a-f]+ ", timeout=WS_TIMEOUT_WDT + 15)
+    serial.expect(r"^ESP Reset Reason: ", timeout=30)
