@@ -10,6 +10,8 @@ docs/api/README.md.
         pmq.track(uid)                       # before it publishes
         pmq.expect_client(uid, timeout=60)
         pmq.expect_d2b_message(uid, "checkin.request", timeout=30)
+        pmq.publish(uid, {"digital": {"add": {"pin": "D14",
+                                              "gpioDirection": "D_OUTPUT"}}})
 
 Messages are dicts as ProtoMQ decodes them: camelCase field names, enum
 names as strings, and fields at their default value (0, false, "")
@@ -204,6 +206,16 @@ class ProtoMQ:
         log.info("enable_checkin_fallback(%s)", bool(enabled))
 
     # --- Messages ---------------------------------------------------------
+
+    def publish(self, client_id, message):
+        """Send client_id the B2D message (a dict, e.g. {"digital": {"add":
+        {...}}}) now, on its ws-b2d topic; the topic. ProtoMQ rejects a
+        message that isn't a valid B2D message, but drops unknown keys, as
+        in set_autorespond()."""
+        topic = self._request("POST", "/publish",
+                              {"client": client_id, "message": message})["topic"]
+        log.info("publish(%s) on %s: %s", client_id, topic, message)
+        return topic
 
     def track(self, client_id):
         """Start capturing the messages client_id sends (its outbox) and
