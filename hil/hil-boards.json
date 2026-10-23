@@ -6,6 +6,7 @@
   "read_baud": 115200,
   "location": { "hub": "1-1.3", "port": 1 },
   "firmware_dir": "/home/pi/firmware/feather_esp32_v2",
-  "run_tests": ["provisioning/", "network/", "mqtt/", "checkin/", "digital/"],
+  "api_tests": ["checkin/", "digital/"],
+  "system_tests": ["provisioning/", "network/", "mqtt/"],
   "skip_tests": []
 }

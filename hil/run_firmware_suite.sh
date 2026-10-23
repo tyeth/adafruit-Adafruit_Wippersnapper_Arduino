@@ -3,11 +3,11 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Runs one test folder under hil/firmware (e.g. "network") against BOARD,
-# for build-hil.yml, which calls this once per folder so each gets its own
-# step. Expects BOARD, FIRMWARE_DIR and LOG_DIR in the environment, and runs
-# from hil/. A folder the board's run_tests leaves out (pytest exit code 5,
-# no tests collected) passes.
+# Runs one suite of hil/firmware tests ("api" or "system": the board
+# entry's api_tests or system_tests in hil-boards.json) against BOARD, for
+# build-hil.yml. Expects BOARD, FIRMWARE_DIR and LOG_DIR in the environment,
+# and runs from hil/. A suite the board leaves empty (pytest exit code 5, no
+# tests collected) passes.
 set -uo pipefail
 
 suite="$1"
@@ -18,7 +18,7 @@ else
   echo "::warning::$creds not found; tests that need credentials will fail"
 fi
 
-venv/bin/pytest "firmware/$suite" \
+venv/bin/pytest firmware --suite "$suite" \
   --board "$BOARD" \
   --firmware-dir "$FIRMWARE_DIR" \
   --serial-log-dir "$LOG_DIR" \
@@ -26,7 +26,7 @@ venv/bin/pytest "firmware/$suite" \
   --log-cli-level=INFO
 rc=$?
 if [ "$rc" -eq 5 ]; then
-  echo "No tests selected in firmware/$suite for $BOARD"
+  echo "No $suite tests selected for $BOARD"
   exit 0
 fi
 exit "$rc"

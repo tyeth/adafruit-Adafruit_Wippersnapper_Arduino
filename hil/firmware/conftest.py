@@ -61,13 +61,18 @@ and a single test by parametrizing it indirectly:
 
 The board entry picks which tests run on it, with selectors relative to
 this dir: a folder ("provisioning/"), a file ("provisioning/test_secrets.py")
-or a test ("provisioning/test_secrets.py::test_default_secrets"):
+or a test ("provisioning/test_secrets.py::test_default_secrets"). They're
+split in two suites: api_tests drive the firmware's API over ProtoMQ, and
+system_tests reprovision and reflash the board, so they're much slower:
 
-    "run_tests": ["provisioning/"],   # only these run; omit to run all
+    "api_tests": ["checkin/", "digital/"],
+    "system_tests": ["provisioning/", "network/", "mqtt/"],
     "skip_tests": []                  # these are reported as skipped
 
-Tests outside run_tests are deselected. Selection on the command line
-(paths, -k) narrows this further; it can't widen it.
+--suite api or --suite system runs only that suite; without it both run.
+Omit both lists to run every test. Tests outside the selected lists are
+deselected. Selection on the command line (paths, -k) narrows this
+further; it can't widen it.
 
 The board entry's wippersnapper_boards_id is the firmware's BOARD_ID,
 which names the board's definition in Wippersnapper_Boards (the
@@ -96,6 +101,7 @@ import hil_protomq  # noqa: E402
 
 DEFAULT_BOARDS = HIL_DIR / "hil-boards.json"
 DEFAULT_WS_BOARDS_DIR = "~/Wippersnapper_Boards"
+SUITES = ("api", "system")  # the board entry's api_tests, system_tests
 SECRETS_SUFFIX = ".secrets.json"
 GOOD_SECRETS = "good"  # valid WiFi and IO
 VALID_IO_ONLY = "valid_io_only"
@@ -125,6 +131,9 @@ def pytest_addoption(parser):
     group.addoption("--serial-log-dir", type=Path,
                     help="write each test's serial and ProtoMQ logs here "
                          "(default: tmp_path)")
+    group.addoption("--suite", choices=SUITES,
+                    help="run only the board entry's api_tests or system_tests "
+                         "(default: both)")
 
 
 def pytest_configure(config):
@@ -171,7 +180,7 @@ def load_board_entry(path, board=None):
 
 
 def _test_selectors(entry, key):
-    """The board entry's run_tests/skip_tests list, with trailing '/'
+    """The board entry's api_tests/system_tests/skip_tests list, with trailing '/'
     stripped, or None if it isn't set."""
     selectors = entry.get(key)
     if selectors is None:
@@ -191,15 +200,30 @@ def _matches(test_id, selectors):
                for s in selectors)
 
 
+def _run_selectors(entry, suite):
+    """The selectors for suite ("api" or "system"), or for both if suite is
+    None; None (run everything) if the entry sets neither list."""
+    if "run_tests" in entry:
+        raise pytest.UsageError(
+            f"board '{entry.get('board')}': 'run_tests' is replaced by "
+            "'api_tests' and 'system_tests'")
+    lists = {s: _test_selectors(entry, f"{s}_tests") for s in SUITES}
+    if suite is not None:
+        return lists[suite] or []
+    if all(v is None for v in lists.values()):
+        return None
+    return [s for v in lists.values() for s in v or []]
+
+
 def pytest_collection_modifyitems(config, items):
-    """Apply the board entry's run_tests and skip_tests to the tests under
-    FIRMWARE_DIR."""
+    """Apply the board entry's api_tests/system_tests (per --suite) and
+    skip_tests to the tests under FIRMWARE_DIR."""
     try:
         entry = load_board_entry(config.getoption("boards"),
                                  config.getoption("board"))
     except pytest.fail.Exception as e:
         raise pytest.UsageError(str(e)) from None
-    run = _test_selectors(entry, "run_tests")
+    run = _run_selectors(entry, config.getoption("suite"))
     skip = _test_selectors(entry, "skip_tests")
     selected, deselected = [], []
     for item in items:

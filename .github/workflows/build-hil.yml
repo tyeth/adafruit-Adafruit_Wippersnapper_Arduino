@@ -6,6 +6,15 @@
 # one on the self-hosted HIL runner (label: wshil) and runs the hil/firmware
 # pytest suite against it.
 #
+# Two modes, over the suites each board's hil-boards.json entry lists:
+#   api  - the board's api_tests, which test the firmware's API against
+#          ProtoMQ. Runs on every pull request.
+#   full - api_tests, then system_tests, which reprovision and reflash the
+#          board for every test, so they take much longer. Runs when a
+#          release is published, or by hand: Actions -> Run workflow ->
+#          suite "full", or `gh workflow run build-hil.yml -f suite=full
+#          --ref <branch>`.
+#
 # The HIL_* credentials (see hil/firmware/conftest.py) are sourced from
 # ~/.config/hil/creds.env on the HIL host, the same file ~/.bashrc loads for
 # manual runs.
@@ -13,7 +22,15 @@ name: WipperSnapper HIL CI
 
 on:
   workflow_dispatch:
+    inputs:
+      suite:
+        description: "api = api_tests only; full = api_tests + system_tests (release suite)"
+        type: choice
+        options: [api, full]
+        default: api
   pull_request:
+  release:
+    types: [published]
 
 # One set of physical boards: queue runs instead of overlapping them.
 concurrency:
@@ -232,7 +249,7 @@ jobs:
           git -C "$HOME/Wippersnapper_Boards" log -1 --format='Wippersnapper_Boards @ %h %s'
 
   hil-test:
-    name: 🧪HIL ${{ matrix.board }}
+    name: 🧪HIL ${{ matrix.board }} (${{ (github.event_name == 'release' || inputs.suite == 'full') && 'full' || 'api' }})
     needs: [hil-matrix, build, hil-prep]
     # Only the brentru fork has the wshil runner, and fork PRs must not run
     # their code on it.
@@ -242,6 +259,9 @@ jobs:
        github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, wshil]
     timeout-minutes: 60
+    env:
+      # "true" runs system_tests too; see the header comment.
+      HIL_FULL: ${{ github.event_name == 'release' || inputs.suite == 'full' }}
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -270,66 +290,20 @@ jobs:
         run: |
           python3 -m venv venv
           venv/bin/pip install -q -r requirements.txt
-      # One step per folder under hil/firmware. Fail if the board's run_tests
-      # (all folders when it's unset) names a folder with no step below.
-      - name: Check every HIL test folder has a step
-        working-directory: hil
-        env:
-          BOARD: ${{ matrix.board }}
-        run: |
-          python3 - <<'EOF'
-          import json, os, re, sys
-          from pathlib import Path
-
-          board = os.environ["BOARD"]
-          data = json.load(open("hil-boards.json"))
-          entries = data if isinstance(data, list) else [data]
-          entry = next((e for e in entries if e.get("board") == board), None)
-          if entry is None:
-              sys.exit(f"board '{board}' not in hil-boards.json")
-          if "run_tests" in entry:
-              expected = {s.strip("/").split("/")[0] for s in entry["run_tests"]}
-          else:
-              expected = {d.name for d in Path("firmware").iterdir()
-                          if d.is_dir() and d.name != "__pycache__"}
-          workflow = Path(os.environ["GITHUB_WORKSPACE"],
-                          ".github/workflows/build-hil.yml").read_text()
-          stepped = set(re.findall(r"run_firmware_suite\.sh (\w+)", workflow))
-          missing = sorted(expected - stepped)
-          for d in missing:
-              print(f"::error::hil/firmware/{d} has no step in build-hil.yml")
-          sys.exit(1 if missing else 0)
-          EOF
-      - name: "HIL tests: provisioning"
+      # The board's hil-boards.json entry lists which tests are in each
+      # suite (api_tests, system_tests); add folders there, not here.
+      - name: "HIL tests: api"
         if: ${{ !cancelled() && steps.venv.outcome == 'success' }}
         working-directory: hil
         env:
           BOARD: ${{ matrix.board }}
-        run: ./run_firmware_suite.sh provisioning
-      - name: "HIL tests: network"
-        if: ${{ !cancelled() && steps.venv.outcome == 'success' }}
+        run: ./run_firmware_suite.sh api
+      - name: "HIL tests: system"
+        if: ${{ env.HIL_FULL == 'true' && !cancelled() && steps.venv.outcome == 'success' }}
         working-directory: hil
         env:
           BOARD: ${{ matrix.board }}
-        run: ./run_firmware_suite.sh network
-      - name: "HIL tests: mqtt"
-        if: ${{ !cancelled() && steps.venv.outcome == 'success' }}
-        working-directory: hil
-        env:
-          BOARD: ${{ matrix.board }}
-        run: ./run_firmware_suite.sh mqtt
-      - name: "HIL tests: checkin"
-        if: ${{ !cancelled() && steps.venv.outcome == 'success' }}
-        working-directory: hil
-        env:
-          BOARD: ${{ matrix.board }}
-        run: ./run_firmware_suite.sh checkin
-      - name: "HIL tests: digital"
-        if: ${{ !cancelled() && steps.venv.outcome == 'success' }}
-        working-directory: hil
-        env:
-          BOARD: ${{ matrix.board }}
-        run: ./run_firmware_suite.sh digital
+        run: ./run_firmware_suite.sh system
       - name: Summarize HIL results
         if: always()
         run: |
