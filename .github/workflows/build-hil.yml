@@ -229,6 +229,14 @@ jobs:
         include: ${{ fromJSON(needs.hil-matrix.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v7
+      # conftest reads board definitions from ~/Wippersnapper_Boards; replace
+      # it each run so the Pi never tests against a stale copy.
+      - name: Refresh Wippersnapper_Boards
+        run: |
+          rm -rf "$HOME/Wippersnapper_Boards"
+          git clone --depth 1 https://github.com/adafruit/Wippersnapper_Boards.git \
+            "$HOME/Wippersnapper_Boards"
+          git -C "$HOME/Wippersnapper_Boards" log -1 --format='Wippersnapper_Boards @ %h %s'
       # runner.temp persists on a self-hosted runner; conftest wants exactly
       # one combined.bin and one partitions.bin in the firmware dir.
       - name: Clean firmware and log dirs
