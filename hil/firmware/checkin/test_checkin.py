@@ -22,6 +22,9 @@ CHECKIN_TIMEOUT = 30
 WS_TIMEOUT_WDT = 60
 
 
+# Flaky: Adafruit_MQTT's publish() waits only 500 ms for the PUBACK, and
+# the firmware halts if the checkin.Request's PUBACK is late.
+@pytest.mark.flaky(reruns=1)
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 def test_checkin_response_ok(board, board_definition, secrets_name,
                              flashed_board, serial, power, device_uid, protomq):

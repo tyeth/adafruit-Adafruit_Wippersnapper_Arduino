@@ -145,6 +145,14 @@ def pytest_configure(config):
                    "the board (deselect with -m \"not slow\")")
 
 
+def _log_stem(request):
+    """The test's log file name, without extension. A flaky test's reruns
+    (pytest-rerunfailures) get a .rerunN suffix so they don't overwrite
+    the failed attempt's logs."""
+    reruns = getattr(request.node, "execution_count", 1) - 1
+    return request.node.name + (f".rerun{reruns}" if reruns > 0 else "")
+
+
 # --- Board and firmware ---------------------------------------------------
 
 
@@ -395,7 +403,7 @@ def protomq(flashed_board, broker_creds, request, pytestconfig, tmp_path):
         _env("HIL_PROTOMQ_DIR", required=False) or hil_protomq.DEFAULT_DIR,
         mqtt_port=broker_creds.port,
         http_port=_env_port("HIL_PROTOMQ_HTTP_PORT"),
-        log_path=log_dir / f"{request.node.name}.protomq.log")
+        log_path=log_dir / f"{_log_stem(request)}.protomq.log")
     try:
         status = server.start()
     except hil_protomq.ProtoMQError as e:
@@ -653,7 +661,7 @@ def serial(board, flashed_board, request, pytestconfig, tmp_path):
     yield mon
     mon.close()
     log_dir = pytestconfig.getoption("serial_log_dir") or tmp_path
-    path = mon.dump(Path(log_dir) / f"{request.node.name}.serial.log")
+    path = mon.dump(Path(log_dir) / f"{_log_stem(request)}.serial.log")
     log.info("serial log: %s", path)
 
 
