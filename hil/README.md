@@ -26,6 +26,24 @@ If the venv doesn't exist yet, create it first:
 
 ```bash
 cd hil
-python3 -m venv venv
-venv/bin/pip install -r requirements.txt
+python3 -m venv --system-site-packages venv  # Pi 5 Blinka needs the apt python3-lgpio
+source venv/bin/activate
+pip3 install --upgrade adafruit-python-shell
+wget https://raw.githubusercontent.com/adafruit/Raspberry-Pi-Installer-Scripts/master/raspi-blinka.py
+sudo -E env PATH=$PATH python3 raspi-blinka.py  # enables I2C, installs Blinka into the venv; reboots
+pip install -r requirements.txt
 ```
+
+## Probe
+
+Tests that check the DUT's pin levels (e.g. `digital/`'s write tests) read
+them through an MCP23017 on this host's I2C bus, described by the board
+entry's `probe` in `hil-boards.json`:
+
+```json
+"probe": { "type": "mcp23017", "address": "0x20", "pin_map": { "D14": "GPA0" } }
+```
+
+`pin_map` maps a DUT pin to the expander pin it's wired to, `GPA0`-`GPA7`
+or `GPB0`-`GPB7`. Check the expander shows up with `i2cdetect -y 1`. Tests
+that need the probe are skipped on boards without one.

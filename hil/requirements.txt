@@ -1,3 +1,4 @@
 pyserial~=3.5
 pytest>=8
 pytest-rerunfailures>=14
+adafruit-circuitpython-mcp230xx

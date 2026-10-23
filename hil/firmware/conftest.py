@@ -10,6 +10,7 @@ Fixture chain:
     board (session) -> flashed_board (function) -> serial (function)
                                                 -> device_uid (function)
                                                 -> protomq (function)
+    board (session) -> probe (session)
 
 Every system test starts from a clean chip: flashed_board erases the whole
 flash (firmware, NVS, filesystem), then flashes the firmware and a LittleFS
@@ -82,6 +83,14 @@ which names the board's definition in Wippersnapper_Boards (the
 board_definition fixture), e.g.:
 
     "wippersnapper_boards_id": "feather-esp32-v2"
+
+The board entry's probe describes the I2C GPIO expander on this host that
+the DUT's pins are wired to, which the probe fixture reads them through
+(see hil_probe.py). pin_map maps a DUT pin to an expander pin, GPA0-GPA7
+or GPB0-GPB7. Tests that request probe are skipped on boards without one:
+
+    "probe": {"type": "mcp23017", "address": "0x20",
+              "pin_map": {"D14": "GPA0"}}
 """
 
 import copy
@@ -100,6 +109,7 @@ FIRMWARE_DIR = Path(__file__).resolve().parent
 HIL_DIR = FIRMWARE_DIR.parent
 sys.path.insert(0, str(HIL_DIR))
 import hil_board_utils  # noqa: E402
+import hil_probe  # noqa: E402
 import hil_protomq  # noqa: E402
 
 DEFAULT_BOARDS = HIL_DIR / "hil-boards.json"
@@ -415,6 +425,21 @@ def protomq(flashed_board, broker_creds, request, pytestconfig, tmp_path):
     yield server
     server.stop()
     log.info("protomq log: %s", server.log_path)
+
+
+@pytest.fixture(scope="session")
+def probe(board):
+    """A hil_probe.Probe reading the DUT's pins through the board entry's
+    probe; skips the test if the entry has none."""
+    config = board.entry.get("probe")
+    if config is None:
+        pytest.skip(f"board '{board.name}' has no 'probe'")
+    try:
+        probe = hil_probe.Probe(config)
+    except hil_probe.ProbeError as e:
+        pytest.fail(f"board '{board.name}': {e}", pytrace=False)
+    yield probe
+    probe.close()
 
 
 @pytest.fixture(scope="session")

@@ -8,5 +8,6 @@
   "firmware_dir": "/home/pi/firmware/feather_esp32_v2",
   "api_tests": ["checkin/", "digital/"],
   "system_tests": ["provisioning/", "network/", "mqtt/"],
-  "skip_tests": []
+  "skip_tests": [],
+  "probe": { "type": "mcp23017", "address": "0x20", "pin_map": { "D14": "GPA0" } }
 }
