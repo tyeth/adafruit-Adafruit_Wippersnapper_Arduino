@@ -41,9 +41,13 @@ def _checkin(board, board_definition, serial, power, device_uid, protomq):
 
     serial.port_reset(board.entry, timeout=15, confirm_off=True, **power)
 
-    # Capture the DUT's UID and tell the broker to track its messages
+    # Capture the DUT's UID and tell the broker to track its messages.
+    # Not asserting that it isn't on the broker yet: if the DUT reconnected
+    # to this test's broker before the port reset cut its power, the broker
+    # keeps that dead session until the DUT reconnects and takes it over.
+    # The checkin.Request below shows the connection is fresh. If this
+    # race causes trouble again, power the DUT off before ProtoMQ starts.
     uid = device_uid(timeout=60)
-    assert not protomq.is_connected(uid), f"{uid} is already on the broker"
     protomq.track(uid)
 
     # Ensure runNetFSM() connects to WiFi and the broker
@@ -65,11 +69,13 @@ def _checkin(board, board_definition, serial, power, device_uid, protomq):
     return uid
 
 
-def _add_output(serial, protomq, uid, pin):
-    """Send a digital.Add for pin as an output, leaving the sample mode,
-    period, initial write and inversion empty, and expect the DUT to add
-    it."""
+def _add_output(serial, protomq, uid, pin, value=None):
+    """Send a digital.Add for pin as an output, with value as its initial
+    write if given, leaving the sample mode, period and inversion empty,
+    and expect the DUT to add it."""
     add = {"pin": pin, "gpioDirection": "D_OUTPUT"}
+    if value is not None:
+        add["write"] = {"pin": pin, "value": {"boolValue": value}}
     protomq.publish(uid, {"digital": {"add": add}})
     protomq.expect_b2d_message(uid, "digital.add", match=add, timeout=5)
 
@@ -136,6 +142,26 @@ def test_digital_write_output_high_low(board, board_definition, secrets_name,
     # --- Act / Assert -------------------------------------------------
     # D14 goes high -> low
     _write(serial, protomq, probe, uid, "D14", False)
+
+
+@pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
+def test_digital_add_output_initial_high(board, board_definition, secrets_name,
+                                         flashed_board, serial, power,
+                                         device_uid, protomq, probe):
+    # --- Arrange ------------------------------------------------------
+    # DUT checks in and adds D14 as an output, which drives it low. Until
+    # then D14 reads high: after reset GPIO14 is an input with its weak
+    # pull-up on
+    uid = _checkin(board, board_definition, serial, power, device_uid, protomq)
+    _add_output(serial, protomq, uid, "D14")
+
+    # --- Act / Assert -------------------------------------------------
+    # The probe checks D14 is low and samples it while the broker re-adds
+    # D14 with an initial write of high, which Handle_DigitalIO_Add()
+    # applies to the new pin (initial_value), then expects it to go high
+    with probe.expect_digitalout_transition(
+            "D14", False, True, timeout=PIN_TRANSITION_TIMEOUT):
+        _add_output(serial, protomq, uid, "D14", value=True)
 
 
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
