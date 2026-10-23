@@ -11,9 +11,12 @@ Fixture chain:
                                                 -> device_uid (function)
                                                 -> protomq (function)
 
-Every test starts from a clean chip: flashed_board erases the whole flash
-(firmware, NVS, filesystem), then flashes the firmware and a LittleFS image
-holding the test's secrets scenario, before the test body runs.
+Every system test starts from a clean chip: flashed_board erases the whole
+flash (firmware, NVS, filesystem), then flashes the firmware and a LittleFS
+image holding the test's secrets scenario, before the test body runs. The
+api tests share one flash: the first erases and flashes, and the rest reuse
+it while their secrets scenario matches (they power-cycle the board
+themselves). The api tests run before the others.
 
 Each scenario's secrets are built here and written to a temp file; none
 are read from disk. The valid credentials come from environment variables
@@ -224,6 +227,7 @@ def pytest_collection_modifyitems(config, items):
     except pytest.fail.Exception as e:
         raise pytest.UsageError(str(e)) from None
     run = _run_selectors(entry, config.getoption("suite"))
+    api = _test_selectors(entry, "api_tests") or []
     skip = _test_selectors(entry, "skip_tests")
     selected, deselected = [], []
     for item in items:
@@ -237,13 +241,15 @@ def pytest_collection_modifyitems(config, items):
         if run is not None and not _matches(test_id, run):
             deselected.append(item)
             continue
+        item.stash[SHARED_FLASH] = _matches(test_id, api)
         if skip and _matches(test_id, skip):
             item.add_marker(pytest.mark.skip(
                 reason=f"in skip_tests for board '{entry['board']}'"))
         selected.append(item)
     if deselected:
         config.hook.pytest_deselected(items=deselected)
-        items[:] = selected
+    # The api tests first, so their shared flash happens once, up front.
+    items[:] = sorted(selected, key=lambda i: not i.stash.get(SHARED_FLASH, False))
 
 
 @pytest.fixture(scope="session")
@@ -582,11 +588,35 @@ class FlashState:
     flash_s: float  # seconds to flash the firmware and image
 
 
+# Whether a test is in the board entry's api_tests, which share one flash.
+SHARED_FLASH = pytest.StashKey[bool]()
+# The api tests' flash: ((firmware, scenario, secrets text), FlashState),
+# or None once anything else flashed the board.
+_shared_flash = None
+
+
 @pytest.fixture
-def flashed_board(board, firmware, secrets_name, secrets_path, tmp_path):
+def flashed_board(request, board, firmware, secrets_name, secrets_path, tmp_path):
     """Erase the whole chip, then flash the firmware and a LittleFS image
     holding secrets_path. The file is packed as-is, valid or not. For
-    no_fs_image only the firmware is flashed."""
+    no_fs_image only the firmware is flashed. An api test reuses the
+    board's flash if an earlier api test flashed the same secrets."""
+    global _shared_flash
+    shared = request.node.stash.get(SHARED_FLASH, False)
+    key = (firmware.combined, secrets_name,
+           secrets_path.read_text() if secrets_path else None)
+    if shared and _shared_flash is not None and _shared_flash[0] == key:
+        log.info("reusing the api tests' flash on %s with scenario %s",
+                 board.port, secrets_name)
+        return _shared_flash[1]
+    _shared_flash = None
+    state = _flash_board(board, firmware, secrets_name, secrets_path, tmp_path)
+    if shared:
+        _shared_flash = (key, state)
+    return state
+
+
+def _flash_board(board, firmware, secrets_name, secrets_path, tmp_path):
     image = None if secrets_name == NO_FS_IMAGE else tmp_path / "littlefs.bin"
     build = None
     try:
