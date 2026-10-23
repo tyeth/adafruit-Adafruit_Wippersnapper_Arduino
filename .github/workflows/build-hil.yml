@@ -265,37 +265,88 @@ jobs:
           name: hil-firmware-${{ matrix.board }}
           path: ${{ env.FIRMWARE_DIR }}
       - name: Set up HIL venv
+        id: venv
         working-directory: hil
         run: |
           python3 -m venv venv
           venv/bin/pip install -q -r requirements.txt
-      - name: Run HIL tests
+      # One step per folder under hil/firmware. Fail if the board's run_tests
+      # (all folders when it's unset) names a folder with no step below.
+      - name: Check every HIL test folder has a step
         working-directory: hil
+        env:
+          BOARD: ${{ matrix.board }}
         run: |
-          creds=~/.config/hil/creds.env
-          if [ -f "$creds" ]; then
-            set -a; . "$creds"; set +a
-          else
-            echo "::warning::$creds not found; tests that need credentials will fail"
-          fi
-          venv/bin/pytest firmware \
-            --board "${{ matrix.board }}" \
-            --firmware-dir "$FIRMWARE_DIR" \
-            --serial-log-dir "$LOG_DIR" \
-            --junitxml "$LOG_DIR/junit.xml" \
-            --log-cli-level=INFO
+          python3 - <<'EOF'
+          import json, os, re, sys
+          from pathlib import Path
+
+          board = os.environ["BOARD"]
+          data = json.load(open("hil-boards.json"))
+          entries = data if isinstance(data, list) else [data]
+          entry = next((e for e in entries if e.get("board") == board), None)
+          if entry is None:
+              sys.exit(f"board '{board}' not in hil-boards.json")
+          if "run_tests" in entry:
+              expected = {s.strip("/").split("/")[0] for s in entry["run_tests"]}
+          else:
+              expected = {d.name for d in Path("firmware").iterdir()
+                          if d.is_dir() and d.name != "__pycache__"}
+          workflow = Path(os.environ["GITHUB_WORKSPACE"],
+                          ".github/workflows/build-hil.yml").read_text()
+          stepped = set(re.findall(r"run_firmware_suite\.sh (\w+)", workflow))
+          missing = sorted(expected - stepped)
+          for d in missing:
+              print(f"::error::hil/firmware/{d} has no step in build-hil.yml")
+          sys.exit(1 if missing else 0)
+          EOF
+      - name: "HIL tests: provisioning"
+        if: ${{ !cancelled() && steps.venv.outcome == 'success' }}
+        working-directory: hil
+        env:
+          BOARD: ${{ matrix.board }}
+        run: ./run_firmware_suite.sh provisioning
+      - name: "HIL tests: network"
+        if: ${{ !cancelled() && steps.venv.outcome == 'success' }}
+        working-directory: hil
+        env:
+          BOARD: ${{ matrix.board }}
+        run: ./run_firmware_suite.sh network
+      - name: "HIL tests: mqtt"
+        if: ${{ !cancelled() && steps.venv.outcome == 'success' }}
+        working-directory: hil
+        env:
+          BOARD: ${{ matrix.board }}
+        run: ./run_firmware_suite.sh mqtt
+      - name: "HIL tests: checkin"
+        if: ${{ !cancelled() && steps.venv.outcome == 'success' }}
+        working-directory: hil
+        env:
+          BOARD: ${{ matrix.board }}
+        run: ./run_firmware_suite.sh checkin
+      - name: "HIL tests: digital"
+        if: ${{ !cancelled() && steps.venv.outcome == 'success' }}
+        working-directory: hil
+        env:
+          BOARD: ${{ matrix.board }}
+        run: ./run_firmware_suite.sh digital
       - name: Summarize HIL results
         if: always()
         run: |
-          python3 - "$LOG_DIR/junit.xml" >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          python3 - "$LOG_DIR" >> "$GITHUB_STEP_SUMMARY" <<'EOF'
           import sys
           import xml.etree.ElementTree as ET
-          try:
-              root = ET.parse(sys.argv[1]).getroot()
-          except (OSError, ET.ParseError):
-              print("### HIL ${{ matrix.board }}: no results (junit.xml missing)")
+          from pathlib import Path
+          suites = []
+          for path in sorted(Path(sys.argv[1]).glob("junit-*.xml")):
+              try:
+                  root = ET.parse(path).getroot()
+              except ET.ParseError:
+                  continue
+              suites += [root] if root.tag == "testsuite" else root.findall("testsuite")
+          if not suites:
+              print("### HIL ${{ matrix.board }}: no results (junit-*.xml missing)")
               sys.exit()
-          suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
           n = {k: sum(int(s.get(k, 0)) for s in suites)
                for k in ("tests", "failures", "errors", "skipped")}
           print(f"### HIL ${{ matrix.board }}\n")
