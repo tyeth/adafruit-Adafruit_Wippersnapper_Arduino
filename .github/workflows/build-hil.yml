@@ -211,9 +211,29 @@ jobs:
             hil-fw/*.combined.bin
             hil-fw/*.partitions.bin
 
+  hil-prep:
+    name: 🔧HIL prep
+    # Only the brentru fork has the wshil runner, and fork PRs must not run
+    # their code on it.
+    if: >-
+      github.repository == 'brentru/Adafruit_Wippersnapper_Arduino' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: [self-hosted, wshil]
+    timeout-minutes: 10
+    steps:
+      # conftest reads board definitions from ~/Wippersnapper_Boards; replace
+      # it each run so the Pi never tests against a stale copy.
+      - name: Refresh Wippersnapper_Boards
+        run: |
+          rm -rf "$HOME/Wippersnapper_Boards"
+          git clone --depth 1 https://github.com/adafruit/Wippersnapper_Boards.git \
+            "$HOME/Wippersnapper_Boards"
+          git -C "$HOME/Wippersnapper_Boards" log -1 --format='Wippersnapper_Boards @ %h %s'
+
   hil-test:
     name: 🧪HIL ${{ matrix.board }}
-    needs: [hil-matrix, build]
+    needs: [hil-matrix, build, hil-prep]
     # Only the brentru fork has the wshil runner, and fork PRs must not run
     # their code on it.
     if: >-
@@ -229,14 +249,6 @@ jobs:
         include: ${{ fromJSON(needs.hil-matrix.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v7
-      # conftest reads board definitions from ~/Wippersnapper_Boards; replace
-      # it each run so the Pi never tests against a stale copy.
-      - name: Refresh Wippersnapper_Boards
-        run: |
-          rm -rf "$HOME/Wippersnapper_Boards"
-          git clone --depth 1 https://github.com/adafruit/Wippersnapper_Boards.git \
-            "$HOME/Wippersnapper_Boards"
-          git -C "$HOME/Wippersnapper_Boards" log -1 --format='Wippersnapper_Boards @ %h %s'
       # runner.temp persists on a self-hosted runner; conftest wants exactly
       # one combined.bin and one partitions.bin in the firmware dir.
       - name: Clean firmware and log dirs
