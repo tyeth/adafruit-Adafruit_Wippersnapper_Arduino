@@ -1,10 +1,11 @@
-"""Read the DUT's pins from the HIL host, through an I2C GPIO expander
-wired to them, for HIL tests that check what the DUT drives on a pin.
+"""Read and drive the DUT's pins from the HIL host, through an I2C GPIO
+expander wired to them, for HIL tests that check what the DUT drives on a
+pin, or what it reads from one.
 
 The board entry describes the wiring:
 
     "probe": {"type": "mcp23017", "address": "0x20",
-              "pin_map": {"D14": "GPA0"}}
+              "pin_map": {"D14": "GPA0", "D32": "GPA1"}}
 
 pin_map maps a DUT pin name to the expander pin it's wired to, GPA0-GPA7
 or GPB0-GPB7.
@@ -13,6 +14,10 @@ or GPB0-GPB7.
     probe.value("D14")                       # read it once, now
     with probe.expect_digitalout_transition("D14", False, True, timeout=2):
         pmq.publish(uid, {"digital": {"write": ...}})   # make it go high
+    probe.drive("D32", True)                 # drive the DUT's input high
+    probe.release("D32")                     # back to an input, not driving
+
+Every pin starts as an input; close() releases the pins it drove.
 
 Blinka and adafruit_mcp230xx are imported when a Probe is made, so this
 module imports on hosts without them.
@@ -72,6 +77,7 @@ class Probe:
         from adafruit_mcp230xx.mcp23017 import MCP23017
 
         self._direction_input = digitalio.Direction.INPUT
+        self._direction_output = digitalio.Direction.OUTPUT
         self._i2c = busio.I2C(board.SCL, board.SDA)
         self._mcp = MCP23017(self._i2c, address=self.address)
         self._pins = {}
@@ -87,6 +93,21 @@ class Probe:
             pin.pull = None
             self._pins[dut_pin] = pin
         return self._pins[dut_pin]
+
+    def drive(self, dut_pin, value):
+        """Drive the DUT pin to value. Sets the output latch before making
+        the expander pin an output, so it doesn't glitch to the old latch."""
+        pin = self._pin(dut_pin)
+        pin.value = value
+        pin.direction = self._direction_output
+        log.info("probe driving %s %d", dut_pin, value)
+
+    def release(self, dut_pin):
+        """Stop driving the DUT pin: make the expander pin an input with no
+        pull."""
+        pin = self._pin(dut_pin)
+        pin.direction = self._direction_input
+        pin.pull = None
 
     def value(self, dut_pin):
         """The DUT pin's level right now."""
@@ -135,4 +156,10 @@ class Probe:
             sampler.join()
 
     def close(self):
-        self._i2c.deinit()
+        """Release every pin, so the expander drives nothing into the DUT
+        after the test, then free the I2C bus."""
+        try:
+            for dut_pin in self._pins:
+                self.release(dut_pin)
+        finally:
+            self._i2c.deinit()

@@ -1,6 +1,6 @@
 """
-HIL tests for Adafruit Wippersnapper firmware's digitalIO component: what
-the DUT does with the broker's digital.B2D messages.
+HIL tests for Adafruit Wippersnapper firmware's digitalIO component driving
+output pins: what the DUT does with the broker's digital.B2D messages.
 
 Exercises:
 - `src/components/digitalIO/controller.cpp::Router()`
@@ -11,62 +11,11 @@ Exercises:
 
 import pytest
 
-# How long runNetFSM() may take to connect to WiFi and the broker, as in
-# test_mqtt.py.
-WIFI_CONNECT_TIMEOUT = 150
-MQTT_CONNECT_TIMEOUT = 120
-# How long after connecting the DUT may take to send its checkin.Request,
-# and to finish the checkin once the broker answers.
-CHECKIN_TIMEOUT = 30
+from dio_helpers import CHECKIN_TIMEOUT, checkin
+
 # How long the DUT's pin may take to reach a written value, read by the
 # probe, from entering expect_digitalout_transition().
 PIN_TRANSITION_TIMEOUT = 2
-
-
-def _checkin(board, board_definition, serial, power, device_uid, protomq):
-    """Reset the DUT and see it through the checkin to its app loop.
-    Returns its UID."""
-    # Create the expected checkin.Response based on the board definition
-    definition = board_definition.definition
-    response = {
-        "response": "R_OK",
-        "totalGpioPins": len(definition["components"]["digitalPins"]),
-        "totalAnalogPins": len(definition["components"]["analogPins"]),
-        "referenceVoltage": definition["mcuRefVoltage"],
-    }
-    protomq.enable_checkin_fallback(False)
-    protomq.set_autorespond(
-        "checkin.request", {"checkin": {"response": response}},
-        match={"hardwareUid": board_definition.board_id})
-
-    serial.port_reset(board.entry, timeout=15, confirm_off=True, **power)
-
-    # Capture the DUT's UID and tell the broker to track its messages.
-    # Not asserting that it isn't on the broker yet: if the DUT reconnected
-    # to this test's broker before the port reset cut its power, the broker
-    # keeps that dead session until the DUT reconnects and takes it over.
-    # The checkin.Request below shows the connection is fresh. If this
-    # race causes trouble again, power the DUT off before ProtoMQ starts.
-    uid = device_uid(timeout=60)
-    protomq.track(uid)
-
-    # Ensure runNetFSM() connects to WiFi and the broker
-    serial.expect(r"^Connected to WiFi!$", timeout=WIFI_CONNECT_TIMEOUT)
-    serial.expect(r"^Connected to Adafruit IO$", timeout=MQTT_CONNECT_TIMEOUT)
-    protomq.expect_client(uid, timeout=5)
-
-    # DUT checks in with the broker
-    protomq.expect_d2b_message(
-        uid, "checkin.request",
-        match={"hardwareUid": board_definition.board_id},
-        timeout=CHECKIN_TIMEOUT)
-    protomq.expect_b2d_message(uid, "checkin.response",
-                               match=response, timeout=5)
-    protomq.expect_d2b_message(uid, "checkin.complete",
-                               timeout=CHECKIN_TIMEOUT)
-    serial.expect(r"^Completed checkin process!$", timeout=CHECKIN_TIMEOUT)
-    serial.expect(r"^Running app loop\.\.\.$", timeout=CHECKIN_TIMEOUT)
-    return uid
 
 
 def _add_output(serial, protomq, uid, pin, value=None):
@@ -90,7 +39,7 @@ def test_digital_add_output(board, board_definition, secrets_name,
                             flashed_board, serial, power, device_uid, protomq):
     # DUT checks in, then the broker sends the digital.Add for D14 once
     # the DUT is fully checked in
-    uid = _checkin(board, board_definition, serial, power, device_uid, protomq)
+    uid = checkin(board, board_definition, serial, power, device_uid, protomq)
     _add_output(serial, protomq, uid, "D14")
 
 
@@ -120,7 +69,7 @@ def test_digital_write_output_low_high(board, board_definition, secrets_name,
                                        protomq, probe):
     # --- Arrange ------------------------------------------------------
     # DUT checks in and adds D14 as an output, which starts low
-    uid = _checkin(board, board_definition, serial, power, device_uid, protomq)
+    uid = checkin(board, board_definition, serial, power, device_uid, protomq)
     _add_output(serial, protomq, uid, "D14")
 
     # --- Act / Assert -------------------------------------------------
@@ -135,7 +84,7 @@ def test_digital_write_output_high_low(board, board_definition, secrets_name,
     # --- Arrange ------------------------------------------------------
     # DUT checks in and adds D14 as an output, which starts low, then the
     # broker drives it high
-    uid = _checkin(board, board_definition, serial, power, device_uid, protomq)
+    uid = checkin(board, board_definition, serial, power, device_uid, protomq)
     _add_output(serial, protomq, uid, "D14")
     _write(serial, protomq, probe, uid, "D14", True)
 
@@ -152,7 +101,7 @@ def test_digital_add_output_initial_high(board, board_definition, secrets_name,
     # DUT checks in and adds D14 as an output, which drives it low. Until
     # then D14 reads high: after reset GPIO14 is an input with its weak
     # pull-up on
-    uid = _checkin(board, board_definition, serial, power, device_uid, protomq)
+    uid = checkin(board, board_definition, serial, power, device_uid, protomq)
     _add_output(serial, protomq, uid, "D14")
 
     # --- Act / Assert -------------------------------------------------
@@ -170,7 +119,7 @@ def test_digital_add_write_remove(board, board_definition, secrets_name,
                                   protomq, probe):
     # --- Arrange ------------------------------------------------------
     # DUT checks in, adds D14 as an output and the broker drives it high
-    uid = _checkin(board, board_definition, serial, power, device_uid, protomq)
+    uid = checkin(board, board_definition, serial, power, device_uid, protomq)
     _add_output(serial, protomq, uid, "D14")
     _write(serial, protomq, probe, uid, "D14", True)
 
@@ -186,7 +135,7 @@ def test_digital_add_write_remove_write(board, board_definition, secrets_name,
     # --- Arrange ------------------------------------------------------
     # DUT checks in, adds D14 as an output, the broker drives it high and
     # then removes it
-    uid = _checkin(board, board_definition, serial, power, device_uid, protomq)
+    uid = checkin(board, board_definition, serial, power, device_uid, protomq)
     _add_output(serial, protomq, uid, "D14")
     _write(serial, protomq, probe, uid, "D14", True)
     _remove(serial, protomq, uid, "D14")
