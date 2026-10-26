@@ -56,3 +56,9 @@ def checkin(board, board_definition, serial, power, device_uid, protomq):
     serial.expect(r"^Completed checkin process!$", timeout=CHECKIN_TIMEOUT)
     serial.expect(r"^Running app loop\.\.\.$", timeout=CHECKIN_TIMEOUT)
     return uid
+
+
+def remove(serial, protomq, uid, pin):
+    """Send a digital.Remove for pin and expect the DUT to remove it."""
+    protomq.publish(uid, {"digital": {"remove": {"pin": pin}}})
+    serial.expect(rf"^\[dio\] Pin removed: {pin.lstrip('D')}$", timeout=5)

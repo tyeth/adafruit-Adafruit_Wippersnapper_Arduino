@@ -98,6 +98,8 @@ class ProtoMQ:
         self._tracked = set()
         # (client id, "inbox"/"outbox") -> seq of the last message expected
         self._cursors = {}
+        # (client_id, box) -> the last message an expect_* call matched
+        self._last = {}
 
     def _request(self, method, path, body=None):
         """Send a request to /api<path>; the reply, which must be status OK."""
@@ -230,7 +232,8 @@ class ProtoMQ:
 
     def _messages(self, client_id, box):
         """The client's captured messages in box ("inbox" or "outbox"),
-        oldest first, without clearing them: [{seq, topic, payload}]."""
+        oldest first, without clearing them: [{seq, time, topic, payload}],
+        time in ms since the epoch when the broker received it."""
         if client_id not in self._tracked:
             raise ProtoMQError(f"{client_id} isn't tracked: call track() "
                                "before it sends anything")
@@ -278,6 +281,7 @@ class ProtoMQ:
                 f"{self._describe(found['later'])}")
         message, value = result
         self._cursors[(client_id, box)] = message["seq"]
+        self._last[(client_id, box)] = message
         log.info("expect_%s_message(%s, %s): #%d after %.2fs: %s", direction,
                  client_id, path, message["seq"], took, value)
         return value
@@ -297,6 +301,17 @@ class ProtoMQ:
         on the topics it subscribed to."""
         return self._expect(client_id, "inbox", "b2d", path, match, timeout,
                             interval)
+
+    def last_d2b_time(self, client_id):
+        """When the broker received the D2B message the last
+        expect_d2b_message() for client_id matched, in seconds since the
+        epoch like time.time(); None if ProtoMQ doesn't timestamp
+        deliveries."""
+        message = self._last.get((client_id, "outbox"))
+        if message is None:
+            raise ProtoMQError(f"no d2b message expected yet for {client_id}")
+        ms = message.get("time")
+        return None if ms is None else ms / 1000
 
     def assert_no_d2b_message(self, client_id, path, *, match=None, within,
                               interval=0.05):

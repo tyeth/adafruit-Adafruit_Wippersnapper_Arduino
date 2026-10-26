@@ -11,7 +11,7 @@ Exercises:
 
 import pytest
 
-from dio_helpers import CHECKIN_TIMEOUT, checkin
+from dio_helpers import CHECKIN_TIMEOUT, checkin, remove
 
 # How long the DUT's pin may take to reach a written value, read by the
 # probe, from entering expect_digitalout_transition().
@@ -55,12 +55,6 @@ def _write(serial, protomq, probe, uid, pin, value):
         protomq.publish(uid, {"digital": {"write": write}})
         serial.expect(rf"^\[dio\] Writing: {int(value)} to Pin {pin.lstrip('D')}$",
                       timeout=5)
-
-
-def _remove(serial, protomq, uid, pin):
-    """Send a digital.Remove for pin and expect the DUT to remove it."""
-    protomq.publish(uid, {"digital": {"remove": {"pin": pin}}})
-    serial.expect(rf"^\[dio\] Pin removed: {pin.lstrip('D')}$", timeout=5)
 
 
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
@@ -125,7 +119,7 @@ def test_digital_add_write_remove(board, board_definition, secrets_name,
 
     # --- Act / Assert -------------------------------------------------
     # DUT removes D14
-    _remove(serial, protomq, uid, "D14")
+    remove(serial, protomq, uid, "D14")
 
 
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
@@ -138,7 +132,7 @@ def test_digital_add_write_remove_write(board, board_definition, secrets_name,
     uid = checkin(board, board_definition, serial, power, device_uid, protomq)
     _add_output(serial, protomq, uid, "D14")
     _write(serial, protomq, probe, uid, "D14", True)
-    _remove(serial, protomq, uid, "D14")
+    remove(serial, protomq, uid, "D14")
 
     # --- Act ----------------------------------------------------------
     # The broker writes to the removed D14
