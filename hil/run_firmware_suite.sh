@@ -5,8 +5,8 @@
 #
 # Runs one suite of hil/firmware tests ("api" or "system": the board
 # entry's api_tests or system_tests in hil-boards.json) against BOARD, for
-# build-hil.yml. Expects BOARD, FIRMWARE_DIR and LOG_DIR in the environment,
-# and runs from hil/. A suite the board leaves empty (pytest exit code 5, no
+# build-hil.yml. Expects BOARD and LOG_DIR in the environment, and runs from
+# hil/. FIRMWARE_DIR, if set, overrides the board entry's firmware_dir. A suite the board leaves empty (pytest exit code 5, no
 # tests collected) passes.
 set -uo pipefail
 
@@ -18,9 +18,14 @@ else
   echo "::warning::$creds not found; tests that need credentials will fail"
 fi
 
+fw_args=()
+if [ -n "${FIRMWARE_DIR:-}" ]; then
+  fw_args=(--firmware-dir "$FIRMWARE_DIR")
+fi
+
 venv/bin/pytest firmware --suite "$suite" \
   --board "$BOARD" \
-  --firmware-dir "$FIRMWARE_DIR" \
+  "${fw_args[@]}" \
   --serial-log-dir "$LOG_DIR" \
   --junitxml "$LOG_DIR/junit-$suite.xml" \
   --log-cli-level=INFO

@@ -47,3 +47,18 @@ entry's `probe` in `hil-boards.json`:
 `pin_map` maps a DUT pin to the expander pin it's wired to, `GPA0`-`GPA7`
 or `GPB0`-`GPB7`. Check the expander shows up with `i2cdetect -y 1`. Tests
 that need the probe are skipped on boards without one.
+
+## CI firmware
+
+For now, `build-hil.yml`'s `hil-test` job flashes the prebuilt firmware in
+the board entry's `firmware_dir` (`hil-boards.json`, e.g.
+`/home/pi/firmware/feather_esp32_v2`) on the HIL host, not the `build` job's
+artifact, and doesn't wait for `build`. So CI tests whatever is in that dir,
+not the PR's `src/`: copy a new build there (exactly one `*.combined.bin`
+and one `*.partitions.bin`) to test a firmware change.
+`run_firmware_suite.sh` passes `--firmware-dir` only if `FIRMWARE_DIR` is
+set.
+
+To go back to testing the `build` artifact, in `hil-test`: add `build` back
+to `needs`, download the `hil-firmware-<board>` artifact into a dir, and
+export that dir as `FIRMWARE_DIR`.
