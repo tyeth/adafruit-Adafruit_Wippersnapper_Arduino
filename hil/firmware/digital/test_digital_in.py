@@ -49,6 +49,10 @@ MODIFY_SAMPLES = 10
 # DUT logs them (serial), and as the broker receives them (adds WiFi jitter)
 TIMER_TOLERANCE = 0.25
 DELIVERY_TOLERANCE = 0.25
+# After a remove, how many times the probe toggles the pin and over how long
+# (seconds); the DUT must publish nothing for it
+REMOVED_TOGGLES = 20
+REMOVED_WINDOW = 2
 
 
 def _power_on(board, power):
@@ -222,6 +226,47 @@ def test_digital_input_pull_up(board, board_definition, secrets_name,
                direction="D_INPUT_PULL_UP", first=True)
 
 
+def _assert_silent_after_remove(serial, protomq, uid, probe, pin, level,
+                                window):
+    """Toggle pin REMOVED_TOGGLES times over window seconds, starting from
+    level, then expect no event for pin on serial and no digital.event at
+    the broker (whose cursor is on the last expected event) since the
+    first toggle, allowing SETTLE_TIME for a late one."""
+    since = serial.mark()
+    for _ in range(REMOVED_TOGGLES):
+        level = not level
+        probe.drive(pin, level)
+        time.sleep(window / REMOVED_TOGGLES)
+    serial.assert_none(_event_re(pin), since=since, duration=SETTLE_TIME)
+    protomq.assert_no_d2b_message(uid, "digital.event", within=0.1)
+
+
+@pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
+def test_digital_input_event_remove(board, board_definition, secrets_name,
+                                    flashed_board, serial, power, device_uid,
+                                    protomq, probe):
+    try:
+        # --- Arrange --------------------------------------------------
+        # D32 is an SM_EVENT input: its first event, then a rising edge
+        uid = _arrange_input(board, board_definition, serial, power,
+                             device_uid, protomq, probe, "D32", False)
+        _add_input(serial, protomq, uid, "D32", "D_INPUT", "SM_EVENT")
+        _expect_event(serial, protomq, uid, "D32", False,
+                      timeout=FIRST_EVENT_TIMEOUT)
+        probe.drive("D32", True)
+        _expect_event(serial, protomq, uid, "D32", True, timeout=EVENT_TIMEOUT)
+
+        # --- Act ------------------------------------------------------
+        remove(serial, protomq, uid, "D32")
+
+        # --- Assert ---------------------------------------------------
+        # The probe toggles D32 over and over, and none of it is published
+        _assert_silent_after_remove(serial, protomq, uid, probe, "D32", True,
+                                    REMOVED_WINDOW)
+    finally:
+        probe.release("D32")
+
+
 def _sample_timer(serial, protomq, uid, probe, pin, level, period, count):
     """Expect count SM_TIMER publishes of pin, each of the level the probe
     drives, flipping that level halfway between publishes so the values
@@ -301,20 +346,18 @@ def test_digital_input_timer_remove(board, board_definition, secrets_name,
         added = serial.mark()
         _add_input(serial, protomq, uid, "D32", "D_INPUT", "SM_TIMER",
                    period=TIMER_PERIOD)
-        _, received = _sample_timer(serial, protomq, uid, probe, "D32", False,
-                                    TIMER_PERIOD, 3)
+        level, received = _sample_timer(serial, protomq, uid, probe, "D32",
+                                        False, TIMER_PERIOD, 3)
         _assert_timer(serial, "D32", added, received, TIMER_PERIOD)
 
         # --- Act ------------------------------------------------------
         remove(serial, protomq, uid, "D32")
-        removed = serial.mark()
 
         # --- Assert ---------------------------------------------------
-        # No publish of D32 for a whole period after the remove, on serial
-        # or at the broker (whose cursor is on the last expected publish)
-        serial.assert_none(_event_re("D32"), since=removed,
-                           duration=TIMER_PERIOD + TIMER_TOLERANCE)
-        protomq.assert_no_d2b_message(uid, "digital.event", within=0.1)
+        # The probe toggles D32 for a whole period after the remove, and
+        # nothing is published
+        _assert_silent_after_remove(serial, protomq, uid, probe, "D32", level,
+                                    TIMER_PERIOD + TIMER_TOLERANCE)
     finally:
         probe.release("D32")
 

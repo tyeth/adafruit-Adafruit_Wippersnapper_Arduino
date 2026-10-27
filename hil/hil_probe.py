@@ -16,8 +16,11 @@ or GPB0-GPB7.
         pmq.publish(uid, {"digital": {"write": ...}})   # make it go high
     probe.drive("D32", True)                 # drive the DUT's input high
     probe.release("D32")                     # back to an input, not driving
+    probe.release()                          # every expander pin, mapped or not
 
-Every pin starts as an input; close() releases the pins it drove.
+The MCP23017 keeps driving its outputs when the DUT loses power, which can
+damage both, so all 16 expander pins are made inputs with no pull when a
+Probe is made, by release() with no pin, and by close().
 
 Blinka and adafruit_mcp230xx are imported when a Probe is made, so this
 module imports on hosts without them.
@@ -30,6 +33,7 @@ import threading
 import time
 
 PROBE_TYPES = ("mcp23017",)
+EXPANDER_PINS = 16
 EXPANDER_PIN_RE = re.compile(r"^GP([AB])([0-7])$")
 TRACE_SAMPLES = 10  # samples shown when a transition times out
 
@@ -82,6 +86,7 @@ class Probe:
         self._mcp = MCP23017(self._i2c, address=self.address)
         self._pins = {}
         log.info("probe %s at 0x%02x: %s", probe_type, self.address, pin_map)
+        self.release()  # an earlier run may have left pins driving
 
     def _pin(self, dut_pin):
         if dut_pin not in self._pins:
@@ -102,12 +107,18 @@ class Probe:
         pin.direction = self._direction_output
         log.info("probe driving %s %d", dut_pin, value)
 
-    def release(self, dut_pin):
+    def release(self, dut_pin=None):
         """Stop driving the DUT pin: make the expander pin an input with no
-        pull."""
-        pin = self._pin(dut_pin)
-        pin.direction = self._direction_input
-        pin.pull = None
+        pull. With no pin, do that to all 16 expander pins."""
+        if dut_pin is not None:
+            pins = [self._pin(dut_pin)]
+        else:
+            pins = [self._mcp.get_pin(n) for n in range(EXPANDER_PINS)]
+        for pin in pins:
+            pin.direction = self._direction_input
+            pin.pull = None
+        if dut_pin is None:
+            log.info("released all probe pins")
 
     def value(self, dut_pin):
         """The DUT pin's level right now."""
@@ -156,10 +167,9 @@ class Probe:
             sampler.join()
 
     def close(self):
-        """Release every pin, so the expander drives nothing into the DUT
+        """Release all 16 expander pins, so it drives nothing into the DUT
         after the test, then free the I2C bus."""
         try:
-            for dut_pin in self._pins:
-                self.release(dut_pin)
+            self.release()
         finally:
             self._i2c.deinit()

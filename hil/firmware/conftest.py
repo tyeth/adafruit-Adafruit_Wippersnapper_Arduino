@@ -10,7 +10,7 @@ Fixture chain:
     board (session) -> flashed_board (function) -> serial (function)
                                                 -> device_uid (function)
                                                 -> protomq (function)
-    board (session) -> probe (session)
+    board (session) -> probe (function)
 
 Every system test starts from a clean chip: flashed_board erases the whole
 flash (firmware, NVS, filesystem), then flashes the firmware and a LittleFS
@@ -87,7 +87,11 @@ board_definition fixture), e.g.:
 The board entry's probe describes the I2C GPIO expander on this host that
 the DUT's pins are wired to, which the probe fixture reads them through
 (see hil_probe.py). pin_map maps a DUT pin to an expander pin, GPA0-GPA7
-or GPB0-GPB7. Tests that request probe are skipped on boards without one:
+or GPB0-GPB7. The probe makes all 16 expander pins inputs with no pull
+when it's opened, before every uhubctl and esptool run while the test
+holds it, and when the test ends, so it never drives the DUT's pins
+through a power change or flash. Tests that request probe are skipped on
+boards without one:
 
     "probe": {"type": "mcp23017", "address": "0x20",
               "pin_map": {"D14": "GPA0"}}
@@ -427,10 +431,12 @@ def protomq(flashed_board, broker_creds, request, pytestconfig, tmp_path):
     log.info("protomq log: %s", server.log_path)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def probe(board):
     """A hil_probe.Probe reading the DUT's pins through the board entry's
-    probe; skips the test if the entry has none."""
+    probe; skips the test if the entry has none. All its pins are
+    released before any power change or flash during the test, and after
+    the test."""
     config = board.entry.get("probe")
     if config is None:
         pytest.skip(f"board '{board.name}' has no 'probe'")
@@ -438,8 +444,12 @@ def probe(board):
         probe = hil_probe.Probe(config)
     except hil_probe.ProbeError as e:
         pytest.fail(f"board '{board.name}': {e}", pytrace=False)
-    yield probe
-    probe.close()
+    hil_board_utils.add_pre_power_hook(probe.release)
+    try:
+        yield probe
+    finally:
+        hil_board_utils.remove_pre_power_hook(probe.release)
+        probe.close()
 
 
 @pytest.fixture(scope="session")

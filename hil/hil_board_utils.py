@@ -568,8 +568,31 @@ def esp_erase_flash_args(esptool, chip, port, baud=None):
     return [*esp_connect_args(chip, port, baud), esptool.erase_flash_command]
 
 
+# --- Pre-power hooks ------------------------------------------------------
+
+# Called with no arguments before every uhubctl run and esptool run, e.g. to
+# stop a probe driving the board's pins before its power goes or it's
+# flashed. A hook that raises stops the power change or flash.
+_pre_power_hooks = []
+
+
+def add_pre_power_hook(fn):
+    _pre_power_hooks.append(fn)
+
+
+def remove_pre_power_hook(fn):
+    if fn in _pre_power_hooks:
+        _pre_power_hooks.remove(fn)
+
+
+def _run_pre_power_hooks():
+    for fn in list(_pre_power_hooks):
+        fn()
+
+
 def esp_run_esptool(esptool, args):
     """Run esptool and return its stdout."""
+    _run_pre_power_hooks()
     try:
         result = subprocess.run(
             [esptool.path, *args], check=True, capture_output=True, text=True
@@ -714,6 +737,7 @@ def run_uhubctl(args, uhubctl=None, sudo=True):
     """
     tool = find_uhubctl(uhubctl) if uhubctl else find_uhubctl()
     cmd = ["sudo", "-n", tool, *args] if sudo else [tool, *args]
+    _run_pre_power_hooks()
     try:
         result = subprocess.run(cmd, check=True, capture_output=True, text=True,
                                 timeout=60)
