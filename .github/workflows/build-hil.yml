@@ -250,7 +250,9 @@ jobs:
 
   hil-test:
     name: 🧪HIL ${{ matrix.board }} (${{ (github.event_name == 'release' || inputs.suite == 'full') && 'full' || 'api' }})
-    needs: [hil-matrix, build, hil-prep]
+    # For now, flashes the prebuilt firmware in the board entry's firmware_dir
+    # (hil-boards.json) on the HIL host, not the build job's artifact.
+    needs: [hil-matrix, hil-prep]
     # Only the brentru fork has the wshil runner, and fork PRs must not run
     # their code on it.
     if: >-
@@ -269,21 +271,13 @@ jobs:
         include: ${{ fromJSON(needs.hil-matrix.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v7
-      # runner.temp persists on a self-hosted runner; conftest wants exactly
-      # one combined.bin and one partitions.bin in the firmware dir.
-      - name: Clean firmware and log dirs
+      # runner.temp persists on a self-hosted runner
+      - name: Clean log dir
         run: |
-          FIRMWARE_DIR="$RUNNER_TEMP/firmware/${{ matrix.board }}"
           LOG_DIR="$RUNNER_TEMP/hil-logs/${{ matrix.board }}"
-          rm -rf "$FIRMWARE_DIR" "$LOG_DIR"
-          mkdir -p "$FIRMWARE_DIR" "$LOG_DIR"
-          echo "FIRMWARE_DIR=$FIRMWARE_DIR" >> "$GITHUB_ENV"
+          rm -rf "$LOG_DIR"
+          mkdir -p "$LOG_DIR"
           echo "LOG_DIR=$LOG_DIR" >> "$GITHUB_ENV"
-      - name: Download HIL firmware
-        uses: actions/download-artifact@v7
-        with:
-          name: hil-firmware-${{ matrix.board }}
-          path: ${{ env.FIRMWARE_DIR }}
       - name: Set up HIL venv
         id: venv
         working-directory: hil
