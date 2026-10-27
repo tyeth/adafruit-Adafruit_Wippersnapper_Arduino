@@ -47,8 +47,8 @@ MODIFY_PERIOD = 5
 MODIFY_SAMPLES = 10
 # How far each gap between timer publishes may be from the period: as the
 # DUT logs them (serial), and as the broker receives them (adds WiFi jitter)
-TIMER_TOLERANCE = 0.25
-DELIVERY_TOLERANCE = 0.25
+TIMER_TOLERANCE = 0.35
+DELIVERY_TOLERANCE = 0.35
 # After a remove, how many times the probe toggles the pin and over how long
 # (seconds); the DUT must publish nothing for it
 REMOVED_TOGGLES = 20

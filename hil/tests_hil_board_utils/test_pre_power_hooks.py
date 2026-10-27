@@ -1,5 +1,5 @@
-"""Pre-power hooks run before every uhubctl and esptool run. Needs no
-hardware: subprocess.run is replaced."""
+"""Pre-power hooks run before every power off, power cycle and esptool run,
+but not power on. Needs no hardware: subprocess.run is replaced."""
 
 import subprocess
 from types import SimpleNamespace
@@ -24,22 +24,26 @@ def calls(monkeypatch):
     return calls
 
 
-def _run_uhubctl():
-    hil_board_utils.run_uhubctl(["-a", "off"], sudo=False)
+def _power_off():
+    hil_board_utils._power_off("1-1", 1, sudo=False)
+
+
+def _power_cycle():
+    hil_board_utils._power_cycle("1-1", 1, sudo=False)
 
 
 def _run_esptool():
     hil_board_utils.esp_run_esptool(SimpleNamespace(path="esptool"), ["version"])
 
 
-@pytest.mark.parametrize("runner", [_run_uhubctl, _run_esptool])
+@pytest.mark.parametrize("runner", [_power_off, _power_cycle, _run_esptool])
 def test_hook_runs_before_command(calls, runner):
     hil_board_utils.add_pre_power_hook(lambda: calls.append("hook"))
     runner()
     assert calls == ["hook", "run"]
 
 
-@pytest.mark.parametrize("runner", [_run_uhubctl, _run_esptool])
+@pytest.mark.parametrize("runner", [_power_off, _power_cycle, _run_esptool])
 def test_raising_hook_stops_command(calls, runner):
     def hook():
         raise OSError("i2c gone")
@@ -56,5 +60,11 @@ def test_removed_hook_doesnt_run(calls):
 
     hil_board_utils.add_pre_power_hook(hook)
     hil_board_utils.remove_pre_power_hook(hook)
-    _run_uhubctl()
+    _power_off()
+    assert calls == ["run"]
+
+
+def test_hook_doesnt_run_on_power_on(calls):
+    hil_board_utils.add_pre_power_hook(lambda: calls.append("hook"))
+    hil_board_utils._power_on("1-1", 1, sudo=False)
     assert calls == ["run"]

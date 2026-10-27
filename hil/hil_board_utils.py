@@ -570,9 +570,10 @@ def esp_erase_flash_args(esptool, chip, port, baud=None):
 
 # --- Pre-power hooks ------------------------------------------------------
 
-# Called with no arguments before every uhubctl run and esptool run, e.g. to
-# stop a probe driving the board's pins before its power goes or it's
-# flashed. A hook that raises stops the power change or flash.
+# Called with no arguments before every power off, power cycle and esptool
+# run, e.g. to stop a probe driving the board's pins before its power goes or
+# it's flashed. Not before power on: the board is already off. A hook that
+# raises stops the power change or flash.
 _pre_power_hooks = []
 
 
@@ -737,7 +738,6 @@ def run_uhubctl(args, uhubctl=None, sudo=True):
     """
     tool = find_uhubctl(uhubctl) if uhubctl else find_uhubctl()
     cmd = ["sudo", "-n", tool, *args] if sudo else [tool, *args]
-    _run_pre_power_hooks()
     try:
         result = subprocess.run(cmd, check=True, capture_output=True, text=True,
                                 timeout=60)
@@ -764,11 +764,13 @@ def _power_on(hub, port, uhubctl=None, sudo=True):
 
 
 def _power_off(hub, port, uhubctl=None, sudo=True):
+    _run_pre_power_hooks()
     return run_uhubctl(uhubctl_args(hub, port, "off"), uhubctl, sudo)
 
 
 def _power_cycle(hub, port, delay=2, uhubctl=None, sudo=True):
     """Turn the port off, wait delay seconds, and turn it back on."""
+    _run_pre_power_hooks()
     return run_uhubctl(uhubctl_args(hub, port, "cycle", delay), uhubctl, sudo)
 
 
