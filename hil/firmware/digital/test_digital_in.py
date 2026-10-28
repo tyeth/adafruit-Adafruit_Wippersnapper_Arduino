@@ -26,7 +26,7 @@ import time
 import pytest
 
 import hil_board_utils
-from dio_helpers import CHECKIN_TIMEOUT, checkin, remove
+from dio_helpers import CHECKIN_TIMEOUT, remove
 
 # digital.Direction values, as Handle_DigitalIO_Add() prints them
 DIRECTIONS = {"D_INPUT": 1, "D_INPUT_PULL_UP": 2}
@@ -123,12 +123,11 @@ def _add_input(serial, protomq, uid, pin, direction="D_INPUT",
     _expect_added(serial, pin, direction)
 
 
-def _arrange_input(board, board_definition, serial, power, device_uid,
-                   protomq, probe, pin, level):
+def _arrange_input(checkin, probe, pin, level):
     """Check the DUT in with the probe not driving pin, then drive pin to
     level, or leave it high-impedance if level is None. Returns the UID."""
     probe.release(pin)
-    uid = checkin(board, board_definition, serial, power, device_uid, protomq)
+    uid = checkin()
     if level is not None:
         probe.drive(pin, level)
     return uid
@@ -151,8 +150,8 @@ def _expect_event(serial, protomq, uid, pin, value, timeout):
         f"expected value {int(value)}: {event}")
 
 
-def _edge_test(board, board_definition, serial, power, device_uid, protomq,
-               probe, pin, start, end, direction="D_INPUT", first=None):
+def _edge_test(checkin, serial, protomq, probe, pin, start, end,
+               direction="D_INPUT", first=None):
     """Check the DUT in, drive pin to start, add it as a direction SM_EVENT
     input, then drive it to end and expect exactly one event of end.
 
@@ -166,8 +165,7 @@ def _edge_test(board, board_definition, serial, power, device_uid, protomq,
         # The probe doesn't drive pin through the power cut and checkin,
         # then holds it at start (or leaves it high-impedance) and the
         # broker adds it. CheckEvent() publishes the first value it reads
-        uid = _arrange_input(board, board_definition, serial, power,
-                             device_uid, protomq, probe, pin, start)
+        uid = _arrange_input(checkin, probe, pin, start)
         added = serial.mark()
         _add_input(serial, protomq, uid, pin, direction, "SM_EVENT")
         _expect_event(serial, protomq, uid, pin, first,
@@ -202,27 +200,25 @@ def _edge_test(board, board_definition, serial, power, device_uid, protomq,
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 def test_digital_input_event_rising_edge(board, board_definition, secrets_name,
                                          flashed_board, serial, power,
-                                         device_uid, protomq, probe):
-    _edge_test(board, board_definition, serial, power, device_uid, protomq,
-               probe, "D32", start=False, end=True)
+                                         device_uid, protomq, probe, checkin):
+    _edge_test(checkin, serial, protomq, probe, "D32", start=False, end=True)
 
 
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 def test_digital_input_event_falling_edge(board, board_definition,
                                           secrets_name, flashed_board, serial,
-                                          power, device_uid, protomq, probe):
-    _edge_test(board, board_definition, serial, power, device_uid, protomq,
-               probe, "D32", start=True, end=False)
+                                          power, device_uid, protomq, probe,
+                                          checkin):
+    _edge_test(checkin, serial, protomq, probe, "D32", start=True, end=False)
 
 
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 def test_digital_input_pull_up(board, board_definition, secrets_name,
                                flashed_board, serial, power, device_uid,
-                               protomq, probe):
+                               protomq, probe, checkin):
     # The probe stays high-impedance, so D32's pull-up makes it read 1,
     # until the probe drives it LOW, which must read 0
-    _edge_test(board, board_definition, serial, power, device_uid, protomq,
-               probe, "D32", start=None, end=False,
+    _edge_test(checkin, serial, protomq, probe, "D32", start=None, end=False,
                direction="D_INPUT_PULL_UP", first=True)
 
 
@@ -244,12 +240,11 @@ def _assert_silent_after_remove(serial, protomq, uid, probe, pin, level,
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 def test_digital_input_event_remove(board, board_definition, secrets_name,
                                     flashed_board, serial, power, device_uid,
-                                    protomq, probe):
+                                    protomq, probe, checkin):
     try:
         # --- Arrange --------------------------------------------------
         # D32 is an SM_EVENT input: its first event, then a rising edge
-        uid = _arrange_input(board, board_definition, serial, power,
-                             device_uid, protomq, probe, "D32", False)
+        uid = _arrange_input(checkin, probe, "D32", False)
         _add_input(serial, protomq, uid, "D32", "D_INPUT", "SM_EVENT")
         _expect_event(serial, protomq, uid, "D32", False,
                       timeout=FIRST_EVENT_TIMEOUT)
@@ -310,12 +305,11 @@ def _assert_timer(serial, pin, since, received, period):
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 def test_digital_input_timer_reporting(board, board_definition, secrets_name,
                                        flashed_board, serial, power,
-                                       device_uid, protomq, probe):
+                                       device_uid, protomq, probe, checkin):
     try:
         # --- Arrange --------------------------------------------------
         # The probe holds D32 low once the DUT is checked in
-        uid = _arrange_input(board, board_definition, serial, power,
-                             device_uid, protomq, probe, "D32", False)
+        uid = _arrange_input(checkin, probe, "D32", False)
 
         # --- Act ------------------------------------------------------
         # The broker adds D32 as a timer input. CheckTimer() publishes at
@@ -337,12 +331,11 @@ def test_digital_input_timer_reporting(board, board_definition, secrets_name,
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 def test_digital_input_timer_remove(board, board_definition, secrets_name,
                                     flashed_board, serial, power, device_uid,
-                                    protomq, probe):
+                                    protomq, probe, checkin):
     try:
         # --- Arrange --------------------------------------------------
         # D32 is a timer input publishing every TIMER_PERIOD
-        uid = _arrange_input(board, board_definition, serial, power,
-                             device_uid, protomq, probe, "D32", False)
+        uid = _arrange_input(checkin, probe, "D32", False)
         added = serial.mark()
         _add_input(serial, protomq, uid, "D32", "D_INPUT", "SM_TIMER",
                    period=TIMER_PERIOD)
@@ -365,13 +358,13 @@ def test_digital_input_timer_remove(board, board_definition, secrets_name,
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 def test_digital_input_timer_modify_period(board, board_definition,
                                            secrets_name, flashed_board, serial,
-                                           power, device_uid, protomq, probe):
+                                           power, device_uid, protomq, probe,
+                                           checkin):
     try:
         # --- Arrange --------------------------------------------------
         # D32 is a timer input publishing every TIMER_PERIOD, then the
         # broker removes it
-        uid = _arrange_input(board, board_definition, serial, power,
-                             device_uid, protomq, probe, "D32", False)
+        uid = _arrange_input(checkin, probe, "D32", False)
         added = serial.mark()
         _add_input(serial, protomq, uid, "D32", "D_INPUT", "SM_TIMER",
                    period=TIMER_PERIOD)

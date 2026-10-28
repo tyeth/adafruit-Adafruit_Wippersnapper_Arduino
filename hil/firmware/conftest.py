@@ -10,6 +10,7 @@ Fixture chain:
     board (session) -> flashed_board (function) -> serial (function)
                                                 -> device_uid (function)
                                                 -> protomq (function)
+    board, serial, device_uid, protomq -> checkin (function)
     board (session) -> probe (function)
 
 Every system test starts from a clean chip: flashed_board erases the whole
@@ -135,6 +136,13 @@ DEFAULT_SECRETS = "default"
 NO_SECRETS_FILE = "no_secrets_file"  # an empty LittleFS image
 NO_FS_IMAGE = "no_fs_image"  # no image: the fs partition stays erased
 DEVICE_UID_RE = re.compile(r"^Device UID: (io-wipper-\S+)$")
+# How long checkin's runNetFSM() may take to connect to WiFi and the
+# broker, as in test_mqtt.py, and how long after connecting the DUT may
+# take to send its checkin.Request, and to finish the checkin once the
+# broker answers.
+CHECKIN_WIFI_TIMEOUT = 150
+CHECKIN_MQTT_TIMEOUT = 120
+CHECKIN_TIMEOUT = 30
 
 log = logging.getLogger("hil.firmware")
 
@@ -737,3 +745,57 @@ def device_uid(serial):
         log.info("device uid: %s", uid)
         return uid
     return read
+
+
+@pytest.fixture
+def checkin(board, board_definition, serial, power, device_uid, protomq):
+    """checkin() resets the DUT and sees it through the checkin to its app
+    loop, the broker answering R_OK for its board definition. Returns its
+    UID. Call it in the test's Arrange step, after anything that must
+    happen before the reset."""
+    def run():
+        # Create the expected checkin.Response based on the board definition
+        definition = board_definition.definition
+        response = {
+            "response": "R_OK",
+            "totalGpioPins": len(definition["components"]["digitalPins"]),
+            "totalAnalogPins": len(definition["components"]["analogPins"]),
+            "referenceVoltage": definition["mcuRefVoltage"],
+        }
+        protomq.enable_checkin_fallback(False)
+        protomq.set_autorespond(
+            "checkin.request", {"checkin": {"response": response}},
+            match={"hardwareUid": board_definition.board_id})
+
+        serial.port_reset(board.entry, timeout=15, confirm_off=True, **power)
+
+        # Capture the DUT's UID and tell the broker to track its messages.
+        # Not asserting that it isn't on the broker yet: if the DUT
+        # reconnected to this test's broker before the port reset cut its
+        # power, the broker keeps that dead session until the DUT
+        # reconnects and takes it over. The checkin.Request below shows the
+        # connection is fresh. If this race causes trouble again, power the
+        # DUT off before ProtoMQ starts.
+        uid = device_uid(timeout=60)
+        protomq.track(uid)
+
+        # Ensure runNetFSM() connects to WiFi and the broker
+        serial.expect(r"^Connected to WiFi!$", timeout=CHECKIN_WIFI_TIMEOUT)
+        serial.expect(r"^Connected to Adafruit IO$",
+                      timeout=CHECKIN_MQTT_TIMEOUT)
+        protomq.expect_client(uid, timeout=5)
+
+        # DUT checks in with the broker
+        protomq.expect_d2b_message(
+            uid, "checkin.request",
+            match={"hardwareUid": board_definition.board_id},
+            timeout=CHECKIN_TIMEOUT)
+        protomq.expect_b2d_message(uid, "checkin.response",
+                                   match=response, timeout=5)
+        protomq.expect_d2b_message(uid, "checkin.complete",
+                                   timeout=CHECKIN_TIMEOUT)
+        serial.expect(r"^Completed checkin process!$",
+                      timeout=CHECKIN_TIMEOUT)
+        serial.expect(r"^Running app loop\.\.\.$", timeout=CHECKIN_TIMEOUT)
+        return uid
+    return run

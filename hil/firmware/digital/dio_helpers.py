@@ -3,7 +3,9 @@ Shared helpers for the digitalIO HIL tests (test_digital_out.py,
 test_digital_in.py).
 """
 
-from hil_checkin import CHECKIN_TIMEOUT, checkin  # noqa: F401
+# How long after checkin the DUT may take to handle a message, as the
+# checkin fixture allows for the checkin itself.
+CHECKIN_TIMEOUT = 30
 
 
 def remove(serial, protomq, uid, pin):

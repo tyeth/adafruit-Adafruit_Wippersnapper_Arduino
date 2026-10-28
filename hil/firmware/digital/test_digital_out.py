@@ -11,7 +11,7 @@ Exercises:
 
 import pytest
 
-from dio_helpers import CHECKIN_TIMEOUT, checkin, remove
+from dio_helpers import CHECKIN_TIMEOUT, remove
 
 # How long the DUT's pin may take to reach a written value, read by the
 # probe, from entering expect_digitalout_transition().
@@ -36,10 +36,11 @@ def _add_output(serial, protomq, uid, pin, value=None):
 
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 def test_digital_add_output(board, board_definition, secrets_name,
-                            flashed_board, serial, power, device_uid, protomq):
+                            flashed_board, serial, power, device_uid, protomq,
+                            checkin):
     # DUT checks in, then the broker sends the digital.Add for D14 once
     # the DUT is fully checked in
-    uid = checkin(board, board_definition, serial, power, device_uid, protomq)
+    uid = checkin()
     _add_output(serial, protomq, uid, "D14")
 
 
@@ -60,10 +61,10 @@ def _write(serial, protomq, probe, uid, pin, value):
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 def test_digital_write_output_low_high(board, board_definition, secrets_name,
                                        flashed_board, serial, power, device_uid,
-                                       protomq, probe):
+                                       protomq, probe, checkin):
     # --- Arrange ------------------------------------------------------
     # DUT checks in and adds D14 as an output, which starts low
-    uid = checkin(board, board_definition, serial, power, device_uid, protomq)
+    uid = checkin()
     _add_output(serial, protomq, uid, "D14")
 
     # --- Act / Assert -------------------------------------------------
@@ -74,11 +75,11 @@ def test_digital_write_output_low_high(board, board_definition, secrets_name,
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 def test_digital_write_output_high_low(board, board_definition, secrets_name,
                                        flashed_board, serial, power, device_uid,
-                                       protomq, probe):
+                                       protomq, probe, checkin):
     # --- Arrange ------------------------------------------------------
     # DUT checks in and adds D14 as an output, which starts low, then the
     # broker drives it high
-    uid = checkin(board, board_definition, serial, power, device_uid, protomq)
+    uid = checkin()
     _add_output(serial, protomq, uid, "D14")
     _write(serial, protomq, probe, uid, "D14", True)
 
@@ -90,12 +91,12 @@ def test_digital_write_output_high_low(board, board_definition, secrets_name,
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 def test_digital_add_output_initial_high(board, board_definition, secrets_name,
                                          flashed_board, serial, power,
-                                         device_uid, protomq, probe):
+                                         device_uid, protomq, probe, checkin):
     # --- Arrange ------------------------------------------------------
     # DUT checks in and adds D14 as an output, which drives it low. Until
     # then D14 reads high: after reset GPIO14 is an input with its weak
     # pull-up on
-    uid = checkin(board, board_definition, serial, power, device_uid, protomq)
+    uid = checkin()
     _add_output(serial, protomq, uid, "D14")
 
     # --- Act / Assert -------------------------------------------------
@@ -110,10 +111,10 @@ def test_digital_add_output_initial_high(board, board_definition, secrets_name,
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 def test_digital_add_write_remove(board, board_definition, secrets_name,
                                   flashed_board, serial, power, device_uid,
-                                  protomq, probe):
+                                  protomq, probe, checkin):
     # --- Arrange ------------------------------------------------------
     # DUT checks in, adds D14 as an output and the broker drives it high
-    uid = checkin(board, board_definition, serial, power, device_uid, protomq)
+    uid = checkin()
     _add_output(serial, protomq, uid, "D14")
     _write(serial, protomq, probe, uid, "D14", True)
 
@@ -125,11 +126,11 @@ def test_digital_add_write_remove(board, board_definition, secrets_name,
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 def test_digital_add_write_remove_write(board, board_definition, secrets_name,
                                         flashed_board, serial, power,
-                                        device_uid, protomq, probe):
+                                        device_uid, protomq, probe, checkin):
     # --- Arrange ------------------------------------------------------
     # DUT checks in, adds D14 as an output, the broker drives it high and
     # then removes it
-    uid = checkin(board, board_definition, serial, power, device_uid, protomq)
+    uid = checkin()
     _add_output(serial, protomq, uid, "D14")
     _write(serial, protomq, probe, uid, "D14", True)
     remove(serial, protomq, uid, "D14")
