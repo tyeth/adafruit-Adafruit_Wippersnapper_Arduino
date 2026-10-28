@@ -84,17 +84,21 @@ board_definition fixture), e.g.:
 
     "wippersnapper_boards_id": "feather-esp32-v2"
 
-The board entry's probe describes the I2C GPIO expander on this host that
-the DUT's pins are wired to, which the probe fixture reads them through
-(see hil_probe.py). pin_map maps a DUT pin to an expander pin, GPA0-GPA7
+The board entry's digital_gpio probe describes the I2C GPIO expander on
+this host that the DUT's pins are wired to, which the probe fixture reads
+them through (see hil_probe.py). pin_map maps a DUT pin to an expander pin, GPA0-GPA7
 or GPB0-GPB7. The probe makes all 16 expander pins inputs with no pull
 when it's opened, before every uhubctl and esptool run while the test
 holds it, and when the test ends, so it never drives the DUT's pins
 through a power change or flash. Tests that request probe are skipped on
-boards without one:
+boards without one. The pwm_input probe, a host GPIO wired to a DUT PWM
+output, works the same way through the pulse_probe fixture:
 
-    "probe": {"type": "mcp23017", "address": "0x20",
-              "pin_map": {"D14": "GPA0"}}
+    "probes": {
+      "digital_gpio": {"type": "mcp23017_gpio", "address": "0x20",
+                       "pin_map": {"D14": "GPA0"}},
+      "pwm_input": {"type": "pi_gpio", "pin_map": {"D27": "D16"}}
+    }
 """
 
 import copy
@@ -431,15 +435,21 @@ def protomq(flashed_board, broker_creds, request, pytestconfig, tmp_path):
     log.info("protomq log: %s", server.log_path)
 
 
+def _probe_config(board, role):
+    """The board entry's probe for role; skips the test if it has none."""
+    config = board.entry.get("probes", {}).get(role)
+    if config is None:
+        pytest.skip(f"board '{board.name}' has no '{role}' probe")
+    return config
+
+
 @pytest.fixture
 def probe(board):
     """A hil_probe.Probe reading the DUT's pins through the board entry's
-    probe; skips the test if the entry has none. All its pins are
-    released before any power change or flash during the test, and after
-    the test."""
-    config = board.entry.get("probe")
-    if config is None:
-        pytest.skip(f"board '{board.name}' has no 'probe'")
+    digital_gpio probe; skips the test if the entry has none. All its pins
+    are released before any power change or flash during the test, and
+    after the test."""
+    config = _probe_config(board, "digital_gpio")
     try:
         probe = hil_probe.Probe(config)
     except hil_probe.ProbeError as e:
@@ -449,6 +459,21 @@ def probe(board):
         yield probe
     finally:
         hil_board_utils.remove_pre_power_hook(probe.release)
+        probe.close()
+
+
+@pytest.fixture
+def pulse_probe(board):
+    """A hil_probe.PulseInProbe timing the DUT's PWM outputs through the
+    board entry's pwm_input probe; skips the test if the entry has none."""
+    config = _probe_config(board, "pwm_input")
+    try:
+        probe = hil_probe.PulseInProbe(config)
+    except hil_probe.ProbeError as e:
+        pytest.fail(f"board '{board.name}': {e}", pytrace=False)
+    try:
+        yield probe
+    finally:
         probe.close()
 
 

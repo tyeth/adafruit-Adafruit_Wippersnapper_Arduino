@@ -34,19 +34,38 @@ sudo -E env PATH=$PATH python3 raspi-blinka.py  # enables I2C, installs Blinka i
 pip install -r requirements.txt
 ```
 
-## Probe
+## Probes
 
-Tests that check the DUT's pin levels (e.g. `digital/`'s write tests) read
-them through an MCP23017 on this host's I2C bus, described by the board
-entry's `probe` in `hil-boards.json`:
+The board entry's `probes` in `hil-boards.json` describe how this host is
+wired to the DUT's pins, one probe per role, each with a hardware `type`:
 
 ```json
-"probe": { "type": "mcp23017", "address": "0x20", "pin_map": { "D14": "GPA0" } }
+"probes": {
+  "digital_gpio": { "type": "mcp23017_gpio", "address": "0x20", "pin_map": { "D14": "GPA0" } },
+  "pwm_input": { "type": "pi_gpio", "pin_map": { "D27": "D16" } }
+}
 ```
 
-`pin_map` maps a DUT pin to the expander pin it's wired to, `GPA0`-`GPA7`
-or `GPB0`-`GPB7`. Check the expander shows up with `i2cdetect -y 1`. Tests
-that need the probe are skipped on boards without one.
+- `digital_gpio` (`mcp23017_gpio`): tests that check the DUT's pin levels
+  (e.g. `digital/`'s write tests) read them through an MCP23017 on this
+  host's I2C bus. `pin_map` maps a DUT pin to the expander pin it's wired
+  to, `GPA0`-`GPA7` or `GPB0`-`GPB7`. Check the expander shows up with
+  `i2cdetect -y 1`.
+- `pwm_input` (`pi_gpio`): tests that time the DUT's PWM output (`pwm/`)
+  wire it straight to one of this host's GPIOs, measured with
+  `pulseio.PulseIn`. `pin_map` maps a DUT pin to the host's Blinka `board`
+  pin, e.g. `D16` for GPIO16 (header pin 36). `pwm/` tests the first DUT
+  pin in it.
+
+Tests that need a probe are skipped on boards without one.
+
+AO-00 (`tests_hil_board_utils/test_ao00_pulsein_selfcheck.py`) measures
+what PulseIn can capture before the `pwm/` tests rely on it. It drives
+GPIO16 from the Pi's own hardware PWM, wired GPIO12 (header pin 32) -> 1 kΩ
+-> GPIO16 (header pin 36), with `dtoverlay=pwm,pin=12,func=4` in
+`/boot/firmware/config.txt`. It reports, per frequency, the missed edges and
+the duty error left after averaging, and the highest frequency with no
+missed edges.
 
 ## CI firmware
 

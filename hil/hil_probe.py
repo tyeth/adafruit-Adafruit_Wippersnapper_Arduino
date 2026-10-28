@@ -2,15 +2,18 @@
 expander wired to them, for HIL tests that check what the DUT drives on a
 pin, or what it reads from one.
 
-The board entry describes the wiring:
+The board entry's probes describe the wiring, one per role:
 
-    "probe": {"type": "mcp23017", "address": "0x20",
-              "pin_map": {"D14": "GPA0", "D32": "GPA1"}}
+    "probes": {
+      "digital_gpio": {"type": "mcp23017_gpio", "address": "0x20",
+                       "pin_map": {"D14": "GPA0", "D32": "GPA1"}},
+      "pwm_input": {"type": "pi_gpio", "pin_map": {"D27": "D16"}}
+    }
 
-pin_map maps a DUT pin name to the expander pin it's wired to, GPA0-GPA7
-or GPB0-GPB7.
+digital_gpio is a Probe: pin_map maps a DUT pin name to the expander pin
+it's wired to, GPA0-GPA7 or GPB0-GPB7.
 
-    probe = Probe(entry["probe"])
+    probe = Probe(entry["probes"]["digital_gpio"])
     probe.value("D14")                       # read it once, now
     with probe.expect_digitalout_transition("D14", False, True, timeout=2):
         pmq.publish(uid, {"digital": {"write": ...}})   # make it go high
@@ -22,17 +25,27 @@ The MCP23017 keeps driving its outputs when the DUT loses power, which can
 damage both, so all 16 expander pins are made inputs with no pull when a
 Probe is made, by release() with no pin, and by close().
 
-Blinka and adafruit_mcp230xx are imported when a Probe is made, so this
-module imports on hosts without them.
+pwm_input is a PulseInProbe: it times the DUT's PWM output on a host GPIO
+wired to the DUT pin, with pulseio.PulseIn (an I2C expander can't time
+edges). pin_map maps a DUT pin name to the host's Blinka board pin name.
+
+    pulse_probe = PulseInProbe(entry["probes"]["pwm_input"])
+    duty, period_us = pulse_probe.measure("D27", periods=100)
+
+Blinka and adafruit_mcp230xx are imported when a Probe or PulseInProbe is
+made, so this module imports on hosts without them.
 """
 
 import contextlib
 import logging
 import re
+import statistics
 import threading
 import time
 
-PROBE_TYPES = ("mcp23017",)
+# The probe roles a board entry's probes may have, and the hardware types
+# each supports.
+PROBE_TYPES = {"digital_gpio": ("mcp23017_gpio",), "pwm_input": ("pi_gpio",)}
 EXPANDER_PINS = 16
 EXPANDER_PIN_RE = re.compile(r"^GP([AB])([0-7])$")
 TRACE_SAMPLES = 10  # samples shown when a transition times out
@@ -57,21 +70,28 @@ def resolve_expander_pin(name):
     return (8 if bank == "B" else 0) + int(pin)
 
 
+def _check_type(role, config):
+    """The config's type, if role supports it."""
+    probe_type = config.get("type")
+    if probe_type not in PROBE_TYPES[role]:
+        raise ProbeError(f"{role} probe 'type' must be one of "
+                         f"{PROBE_TYPES[role]}, got {probe_type!r}")
+    return probe_type
+
+
 class Probe:
     def __init__(self, config):
-        probe_type = config.get("type")
-        if probe_type not in PROBE_TYPES:
-            raise ProbeError(f"probe 'type' must be one of {PROBE_TYPES}, "
-                             f"got {probe_type!r}")
+        probe_type = _check_type("digital_gpio", config)
         try:
             self.address = int(str(config.get("address")), 0)
         except ValueError:
-            raise ProbeError(f"probe 'address' must be an I2C address like "
-                             f"\"0x20\", got {config.get('address')!r}") from None
+            raise ProbeError(f"digital_gpio probe 'address' must be an I2C "
+                             f"address like \"0x20\", got "
+                             f"{config.get('address')!r}") from None
         pin_map = config.get("pin_map")
         if not isinstance(pin_map, dict):
-            raise ProbeError("probe 'pin_map' must be an object, e.g. "
-                             "{\"D14\": \"GPA0\"}")
+            raise ProbeError("digital_gpio probe 'pin_map' must be an object, "
+                             "e.g. {\"D14\": \"GPA0\"}")
         # Resolve now, so a typo fails before the test runs
         self.pin_map = {dut: resolve_expander_pin(exp) for dut, exp in pin_map.items()}
 
@@ -173,3 +193,117 @@ class Probe:
             self.release()
         finally:
             self._i2c.deinit()
+
+
+def missed_edges(lengths, period_us):
+    """How many edges a capture of pulse lengths (us) of a period_us signal
+    missed. Every recorded pulse ends on an edge, so the time they cover
+    holds 2 pulses per period; any fewer recorded were merged by a missed
+    edge."""
+    return max(round(2 * sum(lengths) / period_us) - len(lengths), 0)
+
+
+class PulseInProbe:
+    """Time the DUT's PWM output on host GPIOs with pulseio.PulseIn. The
+    host pins are only ever inputs, so they never drive the DUT."""
+
+    # Extra PulseIn capacity over what capture() needs, so pulses that
+    # arrive between its last len() and pause() don't drop the oldest and
+    # lose track of which pulses are high. 10ms of a 100 kHz signal.
+    SLACK = 2048
+    # Times measure() recaptures after one misses edges. The OS rarely
+    # stalls the capture helper for a few ms (AO-00 saw it in 1 of ~1,400
+    # captures), and no edge was missed at 5 kHz otherwise.
+    STALL_RETRIES = 2
+
+    def __init__(self, config):
+        _check_type("pwm_input", config)
+        pin_map = config.get("pin_map")
+        if not isinstance(pin_map, dict):
+            raise ProbeError("pwm_input probe 'pin_map' must be an object, "
+                             "e.g. {\"D27\": \"D16\"}")
+
+        import board
+        import pulseio
+
+        self._pulseio = pulseio
+        self.pin_map = {}
+        for dut, host in pin_map.items():
+            if not hasattr(board, host):
+                raise ProbeError(f"pwm_input probe pin {host!r} for {dut!r} "
+                                 f"isn't a board pin")
+            self.pin_map[dut] = getattr(board, host)
+        self._pulses = {}
+        log.info("pulse probe: %s", pin_map)
+
+    def _pulse_in(self, dut_pin, maxlen):
+        pulses = self._pulses.get(dut_pin)
+        if pulses is None or pulses.maxlen < maxlen:
+            if dut_pin not in self.pin_map:
+                raise ProbeError(f"DUT pin {dut_pin!r} isn't in the pulse "
+                                 f"probe's pin_map {sorted(self.pin_map)}")
+            if pulses is not None:
+                pulses.deinit()
+            pulses = self._pulseio.PulseIn(self.pin_map[dut_pin],
+                                           maxlen=maxlen, idle_state=False)
+            self._pulses[dut_pin] = pulses
+        return pulses
+
+    def capture(self, dut_pin, count, timeout=2):
+        """Capture count pulse lengths of dut_pin, an active high signal, in
+        us. The first is a high pulse, so even indexes are high pulses and
+        odd ones low, as long as no edge was missed."""
+        needed = count + 2  # the first pair may be partial
+        pulses = self._pulse_in(dut_pin, needed + self.SLACK)
+        pulses.pause()
+        pulses.clear()
+        # After resume() the first pulse recorded is the active (high) one
+        pulses.resume()
+        start = time.monotonic()
+        while len(pulses) < needed:
+            if time.monotonic() - start > timeout:
+                got = len(pulses)
+                pulses.pause()
+                raise ProbeTimeout(
+                    f"{dut_pin}: only {got} of {needed} pulses within "
+                    f"{timeout}s, is it toggling?")
+            time.sleep(0.01)
+        pulses.pause()
+        got = len(pulses)
+        if got >= pulses.maxlen:
+            raise ProbeError(f"{dut_pin}: PulseIn filled ({got}), which "
+                             f"pulses are high is unknown")
+        return [pulses[i] for i in range(2, needed)]
+
+    def measure(self, dut_pin, periods=100, timeout=2):
+        """Capture periods full high+low periods of dut_pin, an active high
+        PWM output, and return its duty (0-1) and mean period in us.
+        Recaptures up to STALL_RETRIES times if a capture misses edges."""
+        for attempt in range(self.STALL_RETRIES + 1):
+            lengths = self.capture(dut_pin, 2 * periods, timeout)
+            pairs = [h + l for h, l in zip(lengths[0::2], lengths[1::2])]
+            # The median period ignores the few pairs a miss merges, so
+            # this doesn't assume the DUT's frequency is right
+            missed = missed_edges(lengths, statistics.median(pairs))
+            if not missed:
+                break
+            log.warning("%s capture %d missed %d edges%s", dut_pin,
+                        attempt + 1, missed,
+                        ", retrying" if attempt < self.STALL_RETRIES else "")
+        else:
+            raise ProbeError(f"{dut_pin}: all {self.STALL_RETRIES + 1} "
+                             f"captures missed edges, last {missed}")
+        high, low = lengths[0::2], lengths[1::2]
+        period_lengths = [h + l for h, l in zip(high, low)]
+        duty = sum(high) / sum(period_lengths)
+        period_us = statistics.mean(period_lengths)
+        log.info("%s duty %.2f%%, period %.1fus (min %d, max %d) over %d "
+                 "periods", dut_pin, duty * 100, period_us,
+                 min(period_lengths), max(period_lengths), periods)
+        return duty, period_us
+
+    def close(self):
+        """Stop every PulseIn and its helper process."""
+        for pulses in self._pulses.values():
+            pulses.deinit()
+        self._pulses.clear()
