@@ -19,10 +19,11 @@ overlay, in /boot/firmware/config.txt, then a reboot:
 
     dtoverlay=pwm,pin=12,func=4
 
-Run from hil/:
+Skipped unless HIL_AO00=1: the jumper must be off GPIO16 for the pwm/
+tests, as GPIO12 would fight the DUT's D27. Run from hil/:
 
-    venv/bin/python -m pytest tests_hil_board_utils/test_ao00_pulsein_selfcheck.py \\
-        --log-cli-level=INFO
+    HIL_AO00=1 venv/bin/python -m pytest \\
+        tests_hil_board_utils/test_ao00_pulsein_selfcheck.py --log-cli-level=INFO
 """
 
 import json
@@ -188,6 +189,9 @@ def _pct(value):
     return "-" if value is None else f"{value:+.3%}"
 
 
+@pytest.mark.skipif(not os.environ.get("HIL_AO00"),
+                    reason="AO-00 needs the GPIO12 -> GPIO16 jumper; set "
+                           "HIL_AO00=1 to run it")
 def test_ao00_pulsein_capture_ceiling(pulse_probe, host_pwm, tmp_path,
                                       record_property):
     # --- Arrange ------------------------------------------------------

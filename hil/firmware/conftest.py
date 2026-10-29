@@ -692,26 +692,37 @@ def flashed_board(request, board, firmware, secrets_name, secrets_path, tmp_path
     return state
 
 
+def _current_port(board):
+    """The board's tty now. A power cycle can re-enumerate it under another
+    name (e.g. /dev/ttyACM2 -> /dev/ttyACM0) partway through a session, so
+    board.port, resolved at session start, may be stale."""
+    try:
+        return hil_board_utils.wait_for_port(board.entry)
+    except hil_board_utils.HilBoardUtilsError as e:
+        pytest.fail(str(e), pytrace=False)
+
+
 def _flash_board(board, firmware, secrets_name, secrets_path, tmp_path):
     image = None if secrets_name == NO_FS_IMAGE else tmp_path / "littlefs.bin"
     build = None
+    port = _current_port(board)
     try:
         start = time.perf_counter()
-        erase = hil_board_utils.esp_erase_flash(board.port, board.chip,
+        erase = hil_board_utils.esp_erase_flash(port, board.chip,
                                                 baud=board.flash_baud)
         erased = time.perf_counter()
         if image is not None:
             build = hil_board_utils.esp_make_littlefs(firmware.partitions, image,
                                                       secrets_path)
         built = time.perf_counter()
-        flash = hil_board_utils.esp_flash(board.port, board.chip, firmware.partitions,
+        flash = hil_board_utils.esp_flash(port, board.chip, firmware.partitions,
                                           firmware.combined, image,
                                           baud=board.flash_baud)
         flashed = time.perf_counter()
     except hil_board_utils.HilBoardUtilsError as e:
         pytest.fail(str(e), pytrace=False)
     log.info("erased %s, flashed %s with scenario %s: erase %.2fs, build %.2fs, "
-             "flash %.2fs", board.port, firmware.combined.name, secrets_name,
+             "flash %.2fs", port, firmware.combined.name, secrets_name,
              erased - start, built - erased, flashed - built)
     return FlashState(secrets_path, erase, build, flash, erase_s=erased - start,
                       build_s=built - erased, flash_s=flashed - built)
@@ -725,7 +736,7 @@ def serial(board, flashed_board, request, pytestconfig, tmp_path):
     """A SerialMonitor on the board's port. It doesn't reset the board; the
     test does (board_reset() or port_reset()), as its Act step. The capture
     is dumped when the test ends."""
-    mon = hil_board_utils.SerialMonitor(board.port, board.read_baud)
+    mon = hil_board_utils.SerialMonitor(_current_port(board), board.read_baud)
     yield mon
     mon.close()
     log_dir = pytestconfig.getoption("serial_log_dir") or tmp_path

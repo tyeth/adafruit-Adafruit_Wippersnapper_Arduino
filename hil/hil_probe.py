@@ -328,12 +328,20 @@ class PulseInProbe:
         """Stop the recording start_record() began and return its pulse
         lengths, in us, high first."""
         pulses = self._pulses[dut_pin]
+        # Blinka's PulseIn blocks forever on a reply from a dead helper
+        if pulses._process is None or pulses._process.poll() is not None:
+            raise ProbeError(f"{dut_pin}: PulseIn's helper process exited "
+                             f"during the recording")
         pulses.pause()
         count = len(pulses)
         if count >= pulses.maxlen:
             raise ProbeError(f"{dut_pin}: recording filled PulseIn ({count}), "
                              f"its start is lost")
-        return [pulses[i] for i in range(count)]
+        start = time.monotonic()
+        lengths = [pulses[i] for i in range(count)]
+        log.info("%s recorded %d pulses, read in %.2fs", dut_pin, count,
+                 time.monotonic() - start)
+        return lengths
 
     def level(self, dut_pin):
         """dut_pin's level now, read with the host pin's pull-down on, so
