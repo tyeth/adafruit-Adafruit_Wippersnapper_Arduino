@@ -46,7 +46,9 @@ RAW_TOLERANCE = 0.08
 # How far most of a detent's values must be from their median, as a
 # fraction of full scale, and the share of them that must be. The ESP32's
 # ADC noise has rare spikes: one held detent's 58 values were 1024-7680
-# around a median of 3008, all but the 7680 (7.1%) within 5%.
+# around a median of 3008, all but the 7680 (7.1%) within 5%. One spike
+# is always allowed, since it can't move the median, for short rests with
+# only a few values.
 RAW_NOISE = 0.05
 RAW_NOISE_INLIERS = 0.9
 # SM_TIMER: the Add.period, and how many publishes the test checks
@@ -65,11 +67,14 @@ POT_DETENTS = 11
 # and how long after the write the DUT's values count toward the detent.
 # DETENT_SETTLE must cover the worst latency from the DAC write to the
 # first value near the detent, as the DUT logs it and as ProtoMQ receives
-# it, both timed on this host's clock (ProtoMQ runs here). Two 20-detent
-# sweeps on the Feather ESP32 V2 saw at most 0.178s on serial and 0.197s
-# at ProtoMQ; this is that worst case with ~2x margin.
-DETENT_DWELL = 3
-DETENT_SETTLE = 0.4
+# it, both timed on this host's clock (ProtoMQ runs here). On the Feather
+# ESP32 V2 that was 0.356s at ProtoMQ over 9 full sweeps (180 detents),
+# usually 20-80ms: the firmware loop sometimes stalls ~0.4s between
+# publishes. The values after DETENT_SETTLE need a few for a stable median:
+# a 0.6s rest (1-2 values) failed 2 of 4 sweeps, 0.75s (4-5 values) passed
+# 4 of 4, so this is 0.75s with margin.
+DETENT_DWELL = 1.0
+DETENT_SETTLE = 0.5
 
 
 def _power_on(board, power):
@@ -233,10 +238,11 @@ def _turn_to_detent(serial, protomq, uid, dac_probe, pin, volts, ref_voltage,
                      f" (median of {shown})")
     noise = RAW_NOISE * RAW_MAX
     outliers = [v for v in values if abs(v - median) > noise]
-    assert len(outliers) <= (1 - RAW_NOISE_INLIERS) * len(values), (
+    allowed = max(1, (1 - RAW_NOISE_INLIERS) * len(values))
+    assert len(outliers) <= allowed, (
         f"{pin} at {volts:.3f}V read {len(outliers)} of {shown} over "
         f"{noise:.0f} from their median {median:.0f}, more than "
-        f"{1 - RAW_NOISE_INLIERS:.0%}: {outliers}")
+        f"{allowed:.0f}: {outliers}")
     # The last value reached the broker too, unless it's the one timed
     if first[0] != len(events) - 1:
         _expect_published(protomq, uid, pin, events[-1][1], timeout=2)
