@@ -9,7 +9,7 @@ The board entry's probes describe the wiring, one per role:
                        "pin_map": {"D14": "GPA0", "D32": "GPA1"}},
       "pwm_input": {"type": "pi_gpio", "pin_map": {"D27": "D16"}},
       "analog_input": {"type": "mcp4728_dac", "address": "0x60",
-                       "pin_map": {"A2": "A"}}
+                       "pin_map": {"A34": "A"}}
     }
 
 digital_gpio is a Probe: pin_map maps a DUT pin name to the expander pin
@@ -37,10 +37,13 @@ edges). pin_map maps a DUT pin name to the host's Blinka board pin name.
 analog_input is a DacProbe: it drives a voltage into the DUT's analog
 input from a channel of an MCP4728 quad DAC on the host's I2C bus.
 pin_map maps a DUT pin name to the DAC channel it's wired to, A-D. The
-optional vdd is the DAC's supply, its full scale, 3.3V if not given.
+channels use the DAC's internal 2.048V reference at 2x gain, so 0-4.095V
+in 1mV steps (outputs can't go above the DAC's VDD). The optional
+max_voltage, 3.3V if not given, is the most the probe will drive, to keep
+within the DUT's logic level.
 
     dac_probe = DacProbe(entry["probes"]["analog_input"])
-    dac_probe.set_voltage("A2", 1.65)        # or .write("A2", 2048)
+    dac_probe.set_voltage("A34", 1.65)       # or .write("A34", 2048)
     dac_probe.release()                      # all 4 channels to 0V, powered down
 
 Blinka and adafruit_mcp230xx are imported when a Probe, PulseInProbe or
@@ -222,7 +225,13 @@ DAC_RELEASE_CMD = bytes([DAC_PD_1K << 4, 0x00] * DAC_CHANNELS)
 DAC_SAVE_CMD = bytes([0b01010000] + [DAC_PD_1K << 5, 0x00] * DAC_CHANNELS)
 DAC_EEPROM_TIMEOUT = 0.5  # the datasheet's EEPROM write is 50ms at most
 DAC_MAX = 4095  # 12-bit
-DAC_DEFAULT_VDD = 3.3
+# Internal 2.048V reference at 2x gain: 4.096V full scale, 1mV per step
+DAC_VREF_INTERNAL = 0b1
+DAC_GAIN_2X = 0b1
+DAC_FULL_SCALE = 2 * 2.048
+# The most a DacProbe drives if its config has no max_voltage, the DUT's
+# logic level
+DAC_DEFAULT_MAX_VOLTAGE = 3.3
 
 
 def _dac_read(i2c, address):
@@ -293,7 +302,8 @@ def release_dac(address=DAC_ADDRESS):
 
 class DacProbe:
     """Drive the DUT's analog inputs from the channels of an MCP4728 quad
-    DAC, referenced to its VDD, so a channel outputs vdd * value / 4096."""
+    DAC, referenced to its internal 2.048V at 2x gain, so a channel
+    outputs 4.096V * value / 4096, value mV, up to max_voltage."""
 
     def __init__(self, config):
         probe_type = _check_type("analog_input", config)
@@ -306,34 +316,48 @@ class DacProbe:
         pin_map = config.get("pin_map")
         if not isinstance(pin_map, dict):
             raise ProbeError("analog_input probe 'pin_map' must be an object, "
-                             "e.g. {\"A2\": \"A\"}")
+                             "e.g. {\"A34\": \"A\"}")
         self.pin_map = {}
         for dut, channel in pin_map.items():
             if channel not in ("A", "B", "C", "D"):
                 raise ProbeError(f"analog_input probe channel for {dut!r} "
                                  f"must be A-D, got {channel!r}")
             self.pin_map[dut] = "ABCD".index(channel)
-        self.vdd = float(config.get("vdd", DAC_DEFAULT_VDD))
+        self.max_voltage = float(config.get("max_voltage",
+                                            DAC_DEFAULT_MAX_VOLTAGE))
+        if not 0 < self.max_voltage <= DAC_FULL_SCALE:
+            raise ProbeError(f"analog_input probe 'max_voltage' must be "
+                             f"0-{DAC_FULL_SCALE}V, got {self.max_voltage}")
+        # The highest value write() takes, compared as an integer so float
+        # rounding can't make max_voltage itself (e.g. 3.3) read as over
+        self._max_value = min(int(self.max_voltage / DAC_FULL_SCALE
+                                  * (DAC_MAX + 1) + 1e-6), DAC_MAX)
 
         import board
         import busio
 
         self._i2c = busio.I2C(board.SCL, board.SDA)
-        log.info("dac probe %s at 0x%02x: %s, vdd %.2fV", probe_type,
-                 self.address, pin_map, self.vdd)
+        log.info("dac probe %s at 0x%02x: %s, max %.3fV", probe_type,
+                 self.address, pin_map, self.max_voltage)
         self.release()  # an earlier run may have left channels driving
 
     def write(self, dut_pin, value):
         """Power up the DAC channel wired to dut_pin and set it to value,
-        0-4095, with Multi-Write (01000 DAC1 DAC0 UDAC, then VREF PD1 PD0
-        Gx D11-D8, D7-D0): VDD reference, gain 1, output updated now."""
+        0-4095 (mV), with Multi-Write (01000 DAC1 DAC0 UDAC, then VREF PD1
+        PD0 Gx D11-D8, D7-D0): internal reference, 2x gain, output updated
+        now. Refuses a value over max_voltage."""
         if dut_pin not in self.pin_map:
             raise ProbeError(f"DUT pin {dut_pin!r} isn't in the DAC probe's "
                              f"pin_map {sorted(self.pin_map)}")
         if not 0 <= value <= DAC_MAX:
             raise ProbeError(f"DAC value must be 0-{DAC_MAX}, got {value}")
+        volts = DAC_FULL_SCALE * value / (DAC_MAX + 1)
+        if value > self._max_value:
+            raise ProbeError(f"DAC value {value} is {volts:.3f}V, over the "
+                             f"probe's max_voltage {self.max_voltage}V")
         channel = self.pin_map[dut_pin]
-        cmd = bytes([0b01000000 | channel << 1, value >> 8, value & 0xFF])
+        high = DAC_VREF_INTERNAL << 7 | DAC_GAIN_2X << 4 | value >> 8
+        cmd = bytes([0b01000000 | channel << 1, high, value & 0xFF])
         while not self._i2c.try_lock():
             time.sleep(0.001)
         try:
@@ -341,16 +365,17 @@ class DacProbe:
         finally:
             self._i2c.unlock()
         log.info("dac driving %s (channel %s) %d, %.3fV", dut_pin,
-                 "ABCD"[channel], value, self.vdd * value / (DAC_MAX + 1))
+                 "ABCD"[channel], value, volts)
 
     def set_voltage(self, dut_pin, volts):
-        """Drive dut_pin to the nearest volts the DAC can make, 0-vdd, and
-        return the voltage it's set to."""
-        if not 0 <= volts <= self.vdd:
-            raise ProbeError(f"DAC voltage must be 0-{self.vdd}V, got {volts}")
-        value = min(round(volts / self.vdd * (DAC_MAX + 1)), DAC_MAX)
+        """Drive dut_pin to the nearest volts the DAC can make, 0 to
+        max_voltage, and return the voltage it's set to."""
+        if not 0 <= volts <= self.max_voltage:
+            raise ProbeError(f"DAC voltage must be 0-{self.max_voltage}V, "
+                             f"got {volts}")
+        value = min(int(volts / DAC_FULL_SCALE * (DAC_MAX + 1) + 0.5), DAC_MAX)
         self.write(dut_pin, value)
-        return self.vdd * value / (DAC_MAX + 1)
+        return DAC_FULL_SCALE * value / (DAC_MAX + 1)
 
     def release(self):
         """Power down all four channels, outputs pulled to 0V, saved to the

@@ -103,7 +103,7 @@ before every power change or flash:
                        "pin_map": {"D14": "GPA0"}},
       "pwm_input": {"type": "pi_gpio", "pin_map": {"D27": "D16"}},
       "analog_input": {"type": "mcp4728_dac", "address": "0x60",
-                       "pin_map": {"A2": "A"}}
+                       "pin_map": {"A34": "A"}}
     }
 """
 
