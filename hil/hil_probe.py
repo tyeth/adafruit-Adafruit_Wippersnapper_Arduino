@@ -302,6 +302,63 @@ class PulseInProbe:
                  min(period_lengths), max(period_lengths), periods)
         return duty, period_us
 
+    def count_pulses(self, dut_pin, window):
+        """How many pulses dut_pin had over window seconds: 0 if it held
+        one level throughout."""
+        pulses = self._pulse_in(dut_pin, 2 + self.SLACK)
+        pulses.pause()
+        pulses.clear()
+        pulses.resume()
+        time.sleep(window)
+        pulses.pause()
+        return len(pulses)
+
+    def start_record(self, dut_pin, max_pulses):
+        """Start recording dut_pin's pulses, at most max_pulses of them,
+        and return the time.time() the recording started, the clock
+        SerialMonitor stamps lines with. The first pulse recorded is the
+        first high one starting after that, within one period."""
+        pulses = self._pulse_in(dut_pin, max_pulses + self.SLACK)
+        pulses.pause()
+        pulses.clear()
+        pulses.resume()
+        return time.time()
+
+    def stop_record(self, dut_pin):
+        """Stop the recording start_record() began and return its pulse
+        lengths, in us, high first."""
+        pulses = self._pulses[dut_pin]
+        pulses.pause()
+        count = len(pulses)
+        if count >= pulses.maxlen:
+            raise ProbeError(f"{dut_pin}: recording filled PulseIn ({count}), "
+                             f"its start is lost")
+        return [pulses[i] for i in range(count)]
+
+    def level(self, dut_pin):
+        """dut_pin's level now, read with the host pin's pull-down on, so
+        an undriven DUT pin reads low. Stops any PulseIn on the pin."""
+        if dut_pin not in self.pin_map:
+            raise ProbeError(f"DUT pin {dut_pin!r} isn't in the pulse "
+                             f"probe's pin_map {sorted(self.pin_map)}")
+        pulses = self._pulses.pop(dut_pin, None)
+        if pulses is not None:
+            pulses.deinit()
+        # lgpio, not digitalio: Blinka's deinit() keeps the line claimed,
+        # so the next PulseIn couldn't take it
+        import lgpio
+        chip = lgpio.gpiochip_open(0)
+        line = self.pin_map[dut_pin].id
+        try:
+            lgpio.gpio_claim_input(chip, line, lgpio.SET_PULL_DOWN)
+            try:
+                time.sleep(0.01)
+                return bool(lgpio.gpio_read(chip, line))
+            finally:
+                lgpio.gpio_free(chip, line)
+        finally:
+            lgpio.gpiochip_close(chip)
+
     def close(self):
         """Stop every PulseIn and its helper process."""
         for pulses in self._pulses.values():
