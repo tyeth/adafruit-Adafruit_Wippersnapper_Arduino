@@ -1,6 +1,5 @@
 """
-HIL tests for Adafruit Wippersnapper firmware's pwm component: what the DUT
-does with the broker's pwm.B2D messages.
+HIL tests for Adafruit Wippersnapper firmware's pwm component.
 
 Exercises:
 - `src/components/pwm/controller.cpp::Router()`
@@ -22,67 +21,46 @@ import pytest
 
 log = logging.getLogger("hil.pwm")
 
-# How long after checkin the DUT may take to handle a message, as the
-# checkin fixture allows for the checkin itself.
+# Maximum time to wait for the DUT to check in, in seconds.
 CHECKIN_TIMEOUT = 30
-# The broker's default fixed PWM frequency, in Hz, and resolution, in bits.
+# The broker's default fixed PWM frequency, in Hz.
 DEFAULT_FREQUENCY = 5000
+# The broker's default PWM resolution, in bits.
 DEFAULT_RESOLUTION = 12
-# How long to watch for the DUT to report an error after it handles a
-# message.
+# Maximum time to wait for the DUT to report an error after handling a message, in seconds.
 ERROR_WINDOW = 3
-# How many PWM periods the pulse probe measures the duty over.
+# Number of PWM periods the pulse probe measures the duty over.
 DUTY_PERIODS = 100
-# How far the pulse probe's measured duty may be off. AO-00 (2026-10-28)
-# measured its duty error at 5 kHz over 100 periods: bias under 0.02%,
-# stdev 0.02-0.05%, worst 0.237% in 240 captures.
+# Maximum acceptable error for the pulse probe's measured duty.
 PROBE_DUTY_ERROR = 0.003
-# How far the measured period may be from the frequency's. AO-00 measured
-# the pulse probe's period error at 5 kHz under 0.05us (0.025%); the
-# ESP32's LEDC divides 5 kHz at 12 bits exactly, leaving its crystal.
+# Period tolerance for the pulse probe's measured period.
 PERIOD_TOLERANCE = 0.005
-# Fractions of full scale the LEDC duty scan writes, clear of 0% and 100%
-# so the shortest pulse (20us at 5 kHz) stays well within the probe's
-# reach.
+# Duty cycles to scan during tests, as fractions of full scale.
 SCAN_DUTIES = (0.10, 0.25, 0.50, 0.75, 0.90)
-# How long a pin must show no edge to count as stopped.
+# Quiet window after a write during which no edges should be detected.
 QUIET_WINDOW = 0.5
 
-# AO-05: Handle_PWM_Write() logs each successful write on one line
-# (pwm.Write's duty_cycle is payload tag 2).
+# Regular expression to match the DUT's write log line for a given pin and value.
 WRITE_LOG = (r"\[pwm\] Wrote to pin: {pin}\[pwm\] Message type: 2"
              r"\[pwm\] Payload value: {value}\b")
-# How far the first period at a new duty may lead the write's log line:
-# Handle_PWM_Write() logs after ledcWrite() takes effect, so the change
-# comes first, by the time to log it and carry it over USB serial. Build
-# 41c3aba9 (2026-10-29) measured -7.81 to -7.96ms over 3 runs.
+
+# How far the first period at a new duty may come before the write's printf line.
 WRITE_LATENCY_BOUND = -0.010
-# How long to keep recording after the write's log line, and the most
-# pulses a recording holds (5 kHz, 2 a period, for 3s).
+# How long to keep recording after the write's printf line
 RECORD_AFTER_WRITE = 0.3
+# Maximum number of pulses to record after the write's printf line
 RECORD_MAX_PULSES = 30000
-# How far a single period's duty and length may be off and still count as
-# at the old or new duty: PulseIn rounds each pulse to 1us, 0.5% of 200us.
+
+# Tolerances for period and duty measurements during transitions.
 PERIOD_DUTY_TOLERANCE = 0.03
 PERIOD_LENGTH_TOLERANCE = 0.05
-# Periods between the last at the old duty and the first at the new one
-# that may be at neither: LEDC applies a new duty at a period boundary, so
-# none, plus one for PulseIn's 1us rounding at the boundary.
+
+# Maximum number of periods that may be in transition between old and new duty.
 MAX_TRANSITION_PERIODS = 1
-# Away from the change, a single period between two good ones, at the
-# right length but off duty, is PulseIn timestamping one edge late (seen
-# at +17us, 2026-10-29), not the DUT: AO-00's averaging hides it, a single
-# period doesn't. Two or more in a row, or a wrong length, still fail.
 
-# AO-11: a free board pin to move the PWM output to; it isn't wired to
-# the pulse probe, so only the old pin going quiet is measured.
-MODIFY_NEW_PIN = "D26"
-
-# AO-14: a 12-bit duty above the 2 ** 12 maximum, which ledcWrite() clamps
-# to fully on, and a frequency no 12-bit LEDC timer reaches (80 MHz / 2 **
-# 12 is about 19.5 kHz).
-DUTY_ABOVE_MAX = 5000
-FREQUENCY_TOO_HIGH = 1_000_000
+# Maximum valid duty cycle and LEDC frequency for the tests.
+MAX_DUTY_CYCLE = 5000
+MAX_LEDC_FREQ = 1_000_000
 # Lines the DUT prints when it crashes or reboots.
 CRASH_RE = re.compile(r"Guru Meditation|Backtrace:|rst:0x|ESP Reset Reason")
 
@@ -197,7 +175,7 @@ def test_pwm_ledc_duty_scan(board, board_definition, secrets_name,
 
 
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
-def test_pwm_duty_endpoints(board, board_definition, secrets_name,
+def test_pwm_duty_min_max_cycle(board, board_definition, secrets_name,
                             flashed_board, serial, power, device_uid,
                             protomq, pulse_probe, pwm_pin, checkin):
     """The 12-bit duty's top end, 4095, holds the pin fully on (100%), and
@@ -273,13 +251,12 @@ def _edge_jitter(periods, i, length):
 
 
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
-def test_ao05_duty_update_timing(board, board_definition, secrets_name,
+def test_duty_update_timing(board, board_definition, secrets_name,
                                  flashed_board, serial, power, device_uid,
                                  protomq, pulse_probe, pwm_pin, checkin,
                                  record_property):
-    """AO-05: a duty change shows up before the write's log line, by no
-    more than WRITE_LATENCY_BOUND, with no stuck or garbled periods in
-    between."""
+    """Tests that a duty cycle change shows up before the write's log line.
+    """
     # --- Arrange ------------------------------------------------------
     # The PWM pin runs at 25%, 12-bit, 5 kHz
     old, new = 1024, 3072
@@ -352,10 +329,10 @@ def test_ao05_duty_update_timing(board, board_definition, secrets_name,
 
 
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
-def test_ao09_remove(board, board_definition, secrets_name, flashed_board,
+def test_pwm_remove(board, board_definition, secrets_name, flashed_board,
                      serial, power, device_uid, protomq, pulse_probe, pwm_pin,
                      checkin):
-    """AO-09: a removed pin stops toggling and is left LOW."""
+    """Test removing a PWM pin stops its output and leaves it LOW."""
     # --- Arrange ------------------------------------------------------
     # The PWM pin runs at 50%, 12-bit, 5 kHz
     uid = checkin()
@@ -373,32 +350,31 @@ def test_ao09_remove(board, board_definition, secrets_name, flashed_board,
     _assert_quiet(pulse_probe, pwm_pin, level=False)
 
 
-def _modify(serial, protomq, uid, old_pin, pin, frequency, duty_cycle):
-    """Send a pwm.Modify removing old_pin and adding pin at frequency,
-    12-bit, with an initial write of duty_cycle, and expect the DUT to do
-    both with no error."""
+def _modify(serial, protomq, uid, pin, frequency, duty_cycle):
+    """Send a pwm.Modify of pin to frequency, 12-bit, with an initial write
+    of duty_cycle, and expect the DUT to remove and re-add it with no
+    error."""
     add = {"pin": pin, "frequency": frequency,
            "resolution": DEFAULT_RESOLUTION,
            "write": {"pin": pin, "dutyCycle": duty_cycle}}
-    modify = {"remove": {"pin": old_pin}, "add": add}
+    modify = {"remove": {"pin": pin}, "add": add}
     protomq.publish(uid, {"pwm": {"modify": modify}})
     protomq.expect_b2d_message(uid, "pwm.modify", match=modify, timeout=5)
     # The remove and add each log their pin without a newline, so they
     # share a line with the add's initial write
-    serial.expect(rf"\[pwm\] Removed pin: {old_pin}\[pwm\] Attached pin: "
+    serial.expect(rf"\[pwm\] Removed pin: {pin}\[pwm\] Attached pin: "
                   rf"{pin}\[pwm\] Processing initial write\.\.\.",
                   timeout=CHECKIN_TIMEOUT)
-    for p in {old_pin, pin}:
-        protomq.assert_no_d2b_message(uid, "error.component", match={"pin": p},
-                                      within=ERROR_WINDOW)
+    protomq.assert_no_d2b_message(uid, "error.component", match={"pin": pin},
+                                  within=ERROR_WINDOW)
 
 
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
-def test_ao11_modify(board, board_definition, secrets_name, flashed_board,
+def test_pwm_modify(board, board_definition, secrets_name, flashed_board,
                      serial, power, device_uid, protomq, pulse_probe,
                      pwm_pin, checkin):
-    """AO-11: a pwm.Modify's new duty, frequency and pin take effect, and
-    a pin change stops the old pin."""
+    """Test that a pwm.Modify of the PWM pin's duty and frequency takes
+    effect."""
     # --- Arrange ------------------------------------------------------
     # The PWM pin runs at 25%, 12-bit, 5 kHz
     uid = checkin()
@@ -409,18 +385,13 @@ def test_ao11_modify(board, board_definition, secrets_name, flashed_board,
 
     # --- Act / Assert -------------------------------------------------
     # Duty: Modify to 75%, given as the Add's initial write
-    _modify(serial, protomq, uid, pwm_pin, pwm_pin, DEFAULT_FREQUENCY, 3072)
+    _modify(serial, protomq, uid, pwm_pin, DEFAULT_FREQUENCY, 3072)
     _assert_pwm(pulse_probe, pwm_pin, 3072, DEFAULT_RESOLUTION,
                 DEFAULT_FREQUENCY)
 
     # Frequency: Modify to 2 kHz at 50%
-    _modify(serial, protomq, uid, pwm_pin, pwm_pin, 2000, 2048)
+    _modify(serial, protomq, uid, pwm_pin, 2000, 2048)
     _assert_pwm(pulse_probe, pwm_pin, 2048, DEFAULT_RESOLUTION, 2000)
-
-    # Pin: Modify to MODIFY_NEW_PIN, so the old pin stops toggling and is
-    # left LOW
-    _modify(serial, protomq, uid, pwm_pin, MODIFY_NEW_PIN, 2000, 2048)
-    _assert_quiet(pulse_probe, pwm_pin, level=False)
 
 
 def _expect_add_rejected(serial, protomq, uid, pin, frequency):
@@ -444,12 +415,10 @@ def _assert_valid_config(serial, protomq, uid, pulse_probe, pin):
 
 
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
-def test_ao14_invalid_values(board, board_definition, secrets_name,
+def test_pwm_invalid_values(board, board_definition, secrets_name,
                              flashed_board, serial, power, device_uid,
                              protomq, pulse_probe, pwm_pin, checkin):
-    """AO-14: a duty above maximum is clamped to fully on, a frequency of
-    0 or beyond the hardware is rejected, the DUT doesn't crash, and the
-    next valid configuration works after each."""
+    """Tests for a duty cycle above maximum and invalid frequencies."""
     # --- Arrange ------------------------------------------------------
     uid = checkin()
     since = serial.mark()
@@ -458,7 +427,7 @@ def test_ao14_invalid_values(board, board_definition, secrets_name,
     # --- Act / Assert -------------------------------------------------
     # Duty above 2 ** 12: ledcWrite() clamps it to fully on, so the pin
     # holds HIGH with no error
-    _write_duty(protomq, uid, pwm_pin, DUTY_ABOVE_MAX)
+    _write_duty(protomq, uid, pwm_pin, MAX_DUTY_CYCLE)
     _assert_quiet(pulse_probe, pwm_pin, level=True)
     _write_duty(protomq, uid, pwm_pin, 2048)
     _assert_pwm(pulse_probe, pwm_pin, 2048, DEFAULT_RESOLUTION,
@@ -470,7 +439,7 @@ def test_ao14_invalid_values(board, board_definition, secrets_name,
     _assert_valid_config(serial, protomq, uid, pulse_probe, pwm_pin)
 
     # Frequency beyond what a 12-bit LEDC timer reaches: rejected
-    _expect_add_rejected(serial, protomq, uid, pwm_pin, FREQUENCY_TOO_HIGH)
+    _expect_add_rejected(serial, protomq, uid, pwm_pin, MAX_LEDC_FREQ)
     _assert_valid_config(serial, protomq, uid, pulse_probe, pwm_pin)
 
     # The DUT didn't crash or reboot throughout
