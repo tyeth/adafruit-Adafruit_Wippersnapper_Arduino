@@ -42,7 +42,8 @@ wired to the DUT's pins, one probe per role, each with a hardware `type`:
 ```json
 "probes": {
   "digital_gpio": { "type": "mcp23017_gpio", "address": "0x20", "pin_map": { "D14": "GPA0" } },
-  "pwm_input": { "type": "pi_gpio", "pin_map": { "D27": "D16" } }
+  "pwm_input": { "type": "pi_gpio", "pin_map": { "D27": "D16" } },
+  "analog_input": { "type": "mcp4728_dac", "address": "0x60", "pin_map": { "A2": "A" } }
 }
 ```
 
@@ -56,6 +57,12 @@ wired to the DUT's pins, one probe per role, each with a hardware `type`:
   `pulseio.PulseIn`. `pin_map` maps a DUT pin to the host's Blinka `board`
   pin, e.g. `D16` for GPIO16 (header pin 36). `pwm/` tests the first DUT
   pin in it.
+- `analog_input` (`mcp4728_dac`): tests that feed a voltage into the DUT's
+  analog input drive it from a channel of an MCP4728 quad DAC on this
+  host's I2C bus. `pin_map` maps a DUT pin to the DAC channel wired to it,
+  `A`-`D`. Optional `vdd` is the DAC's supply and full scale (default
+  `3.3`). Every firmware test ends with all four channels powered down at
+  0V, saved to the DAC's EEPROM, whether or not the board has this probe.
 
 Tests that need a probe are skipped on boards without one.
 

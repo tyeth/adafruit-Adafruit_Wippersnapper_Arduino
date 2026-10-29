@@ -93,12 +93,17 @@ when it's opened, before every uhubctl and esptool run while the test
 holds it, and when the test ends, so it never drives the DUT's pins
 through a power change or flash. Tests that request probe are skipped on
 boards without one. The pwm_input probe, a host GPIO wired to a DUT PWM
-output, works the same way through the pulse_probe fixture:
+output, works the same way through the pulse_probe fixture, and the
+analog_input probe, an MCP4728 DAC channel wired to a DUT analog input,
+through the dac_probe fixture, which also powers down all four channels
+before every power change or flash:
 
     "probes": {
       "digital_gpio": {"type": "mcp23017_gpio", "address": "0x20",
                        "pin_map": {"D14": "GPA0"}},
-      "pwm_input": {"type": "pi_gpio", "pin_map": {"D27": "D16"}}
+      "pwm_input": {"type": "pi_gpio", "pin_map": {"D27": "D16"}},
+      "analog_input": {"type": "mcp4728_dac", "address": "0x60",
+                       "pin_map": {"A2": "A"}}
     }
 """
 
@@ -470,6 +475,18 @@ def probe(board):
         probe.close()
 
 
+@pytest.fixture(autouse=True)
+def release_dac():
+    """After every test, power down all four channels of the host's
+    MCP4728 DAC at 0x60, outputs at 0V, so none drives the DUT, and save
+    that to its EEPROM so it powers up that way."""
+    yield
+    try:
+        hil_probe.release_dac()
+    except (hil_probe.ProbeError, OSError) as e:
+        pytest.fail(f"cannot release DAC: {e}", pytrace=False)
+
+
 @pytest.fixture
 def pulse_probe(board):
     """A hil_probe.PulseInProbe timing the DUT's PWM outputs through the
@@ -482,6 +499,25 @@ def pulse_probe(board):
     try:
         yield probe
     finally:
+        probe.close()
+
+
+@pytest.fixture
+def dac_probe(board):
+    """A hil_probe.DacProbe driving the DUT's analog inputs through the
+    board entry's analog_input probe; skips the test if the entry has
+    none. All four channels are powered down before any power change or
+    flash during the test, and after the test."""
+    config = _probe_config(board, "analog_input")
+    try:
+        probe = hil_probe.DacProbe(config)
+    except hil_probe.ProbeError as e:
+        pytest.fail(f"board '{board.name}': {e}", pytrace=False)
+    hil_board_utils.add_pre_power_hook(probe.release)
+    try:
+        yield probe
+    finally:
+        hil_board_utils.remove_pre_power_hook(probe.release)
         probe.close()
 
 

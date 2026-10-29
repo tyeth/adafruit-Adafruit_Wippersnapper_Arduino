@@ -11,6 +11,7 @@
   "skip_tests": [],
   "probes": {
     "digital_gpio": { "type": "mcp23017_gpio", "address": "0x20", "pin_map": { "D14": "GPA0", "D32": "GPA1" } },
-    "pwm_input": { "type": "pi_gpio", "pin_map": { "D27": "D16" } }
+    "pwm_input": { "type": "pi_gpio", "pin_map": { "D27": "D16" } },
+    "analog_input": { "type": "mcp4728_dac", "address": "0x60", "pin_map": { "A2": "A" } }
   }
 }
