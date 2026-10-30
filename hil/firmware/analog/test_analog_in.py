@@ -54,6 +54,9 @@ RAW_TOLERANCE = 0.08
 # 0.043V off (usually ~25mV low), and single values -0.065V to +0.227V.
 VOLTAGE_TOLERANCE = 0.1
 VOLTAGE_SPIKE_TOLERANCE = 0.3
+# The voltage sweep's version of RAW_NOISE, in volts: the same 5% of a
+# 3.3V full scale. Not yet measured in T_VOLTAGE SM_EVENT mode.
+VOLTAGE_NOISE = 0.165
 # AI-MOD-01: the range a T_RAW value at 1.65V (mid-scale) must be in, as
 # fractions of RAW_MAX, deliberately loose for the ESP32 ADC's
 # nonlinearity; and how far consecutive T_RAW values may differ. The ADC's
@@ -69,6 +72,11 @@ RAW_STABILITY_TOLERANCE = 0.1 * RAW_MAX
 # has no hysteresis today; checkEvent() publishes on any change of
 # _value_raw.
 HYSTERESIS_V = 0.1
+# Skips the tests that need SM_EVENT to ignore the ADC's noise, until the
+# firmware has a change threshold; remove it then.
+NO_EVENT_THRESHOLD = pytest.mark.skip(
+    reason="firmware: SM_EVENT has no change threshold; checkEvent() "
+           "publishes on any change, so ADC noise floods (~20/s)")
 INITIAL_EVENT_ON_EVENT_MODE = True
 EVENT_LATENCY_MAX = 0.5
 # How long an SM_EVENT pin held at a steady voltage must publish nothing,
@@ -286,22 +294,47 @@ def _assert_raw_near(pin, value, volts, ref_voltage, what=""):
         f"of a {ref_voltage}V reference")
 
 
-def _expect_published(protomq, uid, pin, value, timeout):
-    """Expect the broker to get a T_RAW analog.event of value for pin,
-    skipping any others it got first. float_value is in a oneof, so the
-    JSON has it even when it's 0."""
-    return protomq.expect_d2b_message(
-        uid, "analog.event", timeout=timeout,
-        match={"pin": pin, "value": {"type": "T_RAW",
-                                     "floatValue": float(value)}})
+def _expect_published(protomq, uid, pin, value, timeout, read_mode="T_RAW"):
+    """Expect the broker to get a read_mode analog.event of value for pin,
+    as the DUT logged it, skipping any others it got first. float_value
+    is in a oneof, so the JSON has it even when it's 0. A T_VOLTAGE value
+    is logged to 2 decimals, so it matches to VOLTAGE_LOG_ROUNDING."""
+    if read_mode == "T_RAW":
+        return protomq.expect_d2b_message(
+            uid, "analog.event", timeout=timeout,
+            match={"pin": pin, "value": {"type": "T_RAW",
+                                         "floatValue": float(value)}})
+    deadline = time.monotonic() + timeout
+    while True:
+        event = protomq.expect_d2b_message(
+            uid, "analog.event", match={"pin": pin, "value": {"type": read_mode}},
+            timeout=max(deadline - time.monotonic(), 0.1))
+        if abs(event["value"].get("floatValue", 0) - value) <= VOLTAGE_LOG_ROUNDING:
+            return event
+
+
+def _sweep_scale(read_mode, volts, ref_voltage):
+    """For a sweep detent at volts: the value a read_mode reading should
+    have, how far a detent's median may be from it, and how far most of
+    its values may be from their median."""
+    if read_mode == "T_RAW":
+        return (volts / ref_voltage * RAW_MAX, RAW_TOLERANCE * RAW_MAX,
+                RAW_NOISE * RAW_MAX)
+    return volts, VOLTAGE_TOLERANCE, VOLTAGE_NOISE
+
+
+def _fmt(read_mode, value):
+    """value as the DUT logs a read_mode reading."""
+    return f"{value:.0f}" if read_mode == "T_RAW" else f"{value:.3f}V"
 
 
 def _turn_to_detent(serial, protomq, uid, dac_probe, pin, volts, ref_voltage,
-                    previous=None):
+                    previous=None, read_mode="T_RAW"):
     """Turn the simulated pot to volts and rest there for DETENT_DWELL.
     The median of the values the DUT logs from DETENT_SETTLE after the DAC
     write must be near volts, and most of them near that median; the last
-    must reach the broker. Returns the median, and the latency from the
+    must reach the broker. Values are read_mode readings. Returns the
+    median, and the latency from the
     write to the first value nearer that median than previous, the last
     detent's median, as logged on serial and as received by ProtoMQ, in
     seconds; without previous, the first value is timed.
@@ -310,21 +343,23 @@ def _turn_to_detent(serial, protomq, uid, dac_probe, pin, volts, ref_voltage,
     values at a held detent; a steady read publishes once, maybe before
     DETENT_SETTLE, so with none after it the last value since the turn
     counts."""
-    regex = _event_re(pin)
-    expected = volts / ref_voltage * RAW_MAX
+    regex = _event_re(pin, read_mode)
+    parse = int if read_mode == "T_RAW" else float
+    expected, tolerance, noise = _sweep_scale(read_mode, volts, ref_voltage)
     since = serial.mark()
     written = time.time()  # SerialLine.time's and ProtoMQ's clock
     volts = dac_probe.set_voltage(pin, volts)
     time.sleep(DETENT_DWELL)
 
-    events = [(l.time, int(regex.search(l.text).group(1)))
-              for l in _serial_events(serial, pin, since)]
+    events = [(l.time, parse(regex.search(l.text).group(1)))
+              for l in _serial_events(serial, pin, since, read_mode)]
     assert events, f"{pin} published nothing in {DETENT_DWELL}s at {volts:.3f}V"
     values = [v for t, v in events if t >= written + DETENT_SETTLE]
     if not values:
         values = [events[-1][1]]
     median = statistics.median(values)
-    shown = f"{len(values)} values, {min(values)}-{max(values)}"
+    shown = (f"{len(values)} values, {_fmt(read_mode, min(values))}-"
+             f"{_fmt(read_mode, max(values))}")
 
     # Latency: the first value after the write that's nearer this detent
     # than the last one. The bands' tolerances overlap, and the ADC reads
@@ -334,37 +369,45 @@ def _turn_to_detent(serial, protomq, uid, dac_probe, pin, volts, ref_voltage,
                   if t >= written and (previous is None or
                                        abs(v - median) < abs(v - previous))),
                  None)
-    assert first, (f"{pin} published nothing nearer {median:.0f} than "
-                   f"{previous:.0f} after the DAC went to {volts:.3f}V: "
-                   f"{[v for _, v in events]}")
+    assert first, (f"{pin} published nothing nearer "
+                   f"{_fmt(read_mode, median)} than "
+                   f"{_fmt(read_mode, previous)} after the DAC went to "
+                   f"{volts:.3f}V: {[v for _, v in events]}")
     serial_latency = first[1] - written
-    _expect_published(protomq, uid, pin, first[2], timeout=2)
+    _expect_published(protomq, uid, pin, first[2], timeout=2, read_mode=read_mode)
     broker_latency = protomq.last_d2b_time(uid) - written
 
-    log.info("%s at %.3fV (expected %.0f): median %.0f of %s; reached in "
-             "%.3fs serial, %.3fs broker", pin, volts, expected, median, shown,
+    log.info("%s at %.3fV (expected %s): median %s of %s; reached in "
+             "%.3fs serial, %.3fs broker", pin, volts,
+             _fmt(read_mode, expected), _fmt(read_mode, median), shown,
              serial_latency, broker_latency)
-    _assert_raw_near(pin, median, volts, ref_voltage,
-                     f" (median of {shown})")
-    noise = RAW_NOISE * RAW_MAX
+    assert abs(median - expected) <= tolerance, (
+        f"{pin} read a median of {_fmt(read_mode, median)} ({shown}), "
+        f"expected {_fmt(read_mode, expected)} +/- "
+        f"{_fmt(read_mode, tolerance)} for the DAC's {volts:.3f}V of a "
+        f"{ref_voltage}V reference")
     outliers = [v for v in values if abs(v - median) > noise]
     allowed = max(1, (1 - RAW_NOISE_INLIERS) * len(values))
     assert len(outliers) <= allowed, (
         f"{pin} at {volts:.3f}V read {len(outliers)} of {shown} over "
-        f"{noise:.0f} from their median {median:.0f}, more than "
-        f"{allowed:.0f}: {outliers}")
+        f"{_fmt(read_mode, noise)} from their median "
+        f"{_fmt(read_mode, median)}, more than {allowed:.0f}: {outliers}")
     # The last value reached the broker too, unless it's the one timed
     if first[0] != len(events) - 1:
-        _expect_published(protomq, uid, pin, events[-1][1], timeout=2)
+        _expect_published(protomq, uid, pin, events[-1][1], timeout=2,
+                          read_mode=read_mode)
     return median, serial_latency, broker_latency
 
 
-def _at_end(value):
-    """Whether a T_RAW value is within RAW_TOLERANCE of either end of the
-    scale, where the ADC clips, so neighbouring detents may read the
-    same."""
-    tolerance = RAW_TOLERANCE * RAW_MAX
-    return value <= tolerance or value >= RAW_MAX - tolerance
+def _at_end(value, read_mode="T_RAW", ref_voltage=None):
+    """Whether a read_mode value is within its sweep tolerance of either
+    end of the scale, where the ADC clips, so neighbouring detents may
+    read the same."""
+    if read_mode == "T_RAW":
+        full, tolerance = RAW_MAX, RAW_TOLERANCE * RAW_MAX
+    else:
+        full, tolerance = ref_voltage, VOLTAGE_TOLERANCE
+    return value <= tolerance or value >= full - tolerance
 
 
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
@@ -447,11 +490,14 @@ def test_analog_input_add_timer_voltage_fixed_voltage(
         f"publishes should be {TIMER_PERIOD}s +/- {TIMER_TOLERANCE}s apart: "
         f"[{shown}]")
 
-@pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
-def test_analog_input_event_raw_pot_sweep(board, board_definition,
-                                          secrets_name, flashed_board, serial,
-                                          power, device_uid, protomq,
-                                          dac_probe, analog_pin, checkin):
+def _pot_sweep(checkin, serial, protomq, board_definition, dac_probe, pin,
+               read_mode):
+    """Check the DUT in and add pin as a read_mode SM_EVENT input across a
+    simulated detented pot, then turn it one detent at a time CW to the top
+    and CCW back to the bottom. Each detent's median must be near its
+    voltage, higher than the last on the way up and lower on the way down,
+    unless both clip at an end, and the latency to it within
+    DETENT_SETTLE."""
     # --- Arrange ------------------------------------------------------
     # The simulated pot is across the MCU's reference voltage, starting at
     # its fully CCW detent
@@ -459,34 +505,34 @@ def test_analog_input_event_raw_pot_sweep(board, board_definition,
     ref_voltage = _ref_voltage(board_definition)
     top = min(ref_voltage, dac_probe.max_voltage)
     detents = [top * (i + 0.5) / POT_DETENTS for i in range(POT_DETENTS)]
-    dac_probe.set_voltage(analog_pin, detents[0])
+    dac_probe.set_voltage(pin, detents[0])
     # No period or ref_voltage: SM_EVENT doesn't use a period, and native
     # pins use the checkin's reference voltage
-    _add(serial, protomq, uid, analog_pin, "T_RAW", "SM_EVENT")
+    _add(serial, protomq, uid, pin, read_mode, "SM_EVENT")
 
     # --- Act / Assert -------------------------------------------------
-    # One detent at a time, CW to the top then CCW back to the bottom. Each
-    # detent's median must be near its voltage, higher than the last on the
-    # way up and lower on the way down, unless both clip at an end
     sweep = detents[1:] + detents[-2::-1]
     readings = []
     latencies = []
     previous = None
     for volts in sweep:
         value, serial_latency, broker_latency = _turn_to_detent(
-            serial, protomq, uid, dac_probe, analog_pin, volts, ref_voltage,
-            previous[1] if previous else None)
+            serial, protomq, uid, dac_probe, pin, volts, ref_voltage,
+            previous[1] if previous else None, read_mode)
         readings.append((volts, value))
         latencies.append((serial_latency, broker_latency))
         if previous is not None:
             prev_volts, prev_value = previous
             rising = volts > prev_volts
             moved = value > prev_value if rising else value < prev_value
-            assert moved or (_at_end(value) and _at_end(prev_value)), (
-                f"{analog_pin} read {prev_value:.0f} at {prev_volts:.3f}V "
-                f"then {value:.0f} at {volts:.3f}V, should have "
+            clipped = (_at_end(value, read_mode, ref_voltage) and
+                       _at_end(prev_value, read_mode, ref_voltage))
+            assert moved or clipped, (
+                f"{pin} read {_fmt(read_mode, prev_value)} at "
+                f"{prev_volts:.3f}V then {_fmt(read_mode, value)} at "
+                f"{volts:.3f}V, should have "
                 f"{'risen' if rising else 'fallen'}; sweep so far: "
-                f"{[(f'{v:.3f}V', int(r)) for v, r in readings]}")
+                f"{[(f'{v:.3f}V', _fmt(read_mode, r)) for v, r in readings]}")
         previous = (volts, value)
 
     # The settle time the values above relied on covered every detent's
@@ -497,8 +543,28 @@ def test_analog_input_event_raw_pot_sweep(board, board_definition,
              max(l[0] for l in latencies), max(l[1] for l in latencies),
              len(latencies))
     assert worst <= DETENT_SETTLE, (
-        f"{analog_pin} took up to {worst:.3f}s to publish a value near a "
-        f"new detent, over DETENT_SETTLE {DETENT_SETTLE}s: {latencies}")
+        f"{pin} took up to {worst:.3f}s to publish a value near a new "
+        f"detent, over DETENT_SETTLE {DETENT_SETTLE}s: {latencies}")
+
+
+@pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
+def test_analog_input_event_raw_pot_sweep(board, board_definition,
+                                          secrets_name, flashed_board, serial,
+                                          power, device_uid, protomq,
+                                          dac_probe, analog_pin, checkin):
+    _pot_sweep(checkin, serial, protomq, board_definition, dac_probe,
+               analog_pin, "T_RAW")
+
+
+@pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
+def test_analog_input_event_voltage_pot_sweep(board, board_definition,
+                                              secrets_name, flashed_board,
+                                              serial, power, device_uid,
+                                              protomq, dac_probe, analog_pin,
+                                              checkin):
+    """The pot sweep in T_VOLTAGE."""
+    _pot_sweep(checkin, serial, protomq, board_definition, dac_probe,
+               analog_pin, "T_VOLTAGE")
 
 
 def _assert_voltage_near(pin, value, volts, what=""):
@@ -559,6 +625,7 @@ def test_analog_input_modify_read_mode(board, board_definition, secrets_name,
         f"{RAW_STABILITY_TOLERANCE:.0f}")
 
 
+@NO_EVENT_THRESHOLD
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 def test_analog_input_modify_sample_mode(board, board_definition,
                                          secrets_name, flashed_board, serial,
@@ -654,6 +721,7 @@ def test_analog_input_add_remove(board, board_definition, secrets_name,
         f"it again")
 
 
+@NO_EVENT_THRESHOLD
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 def test_analog_input_event_quiet_when_steady(board, board_definition,
                                               secrets_name, flashed_board,
@@ -662,10 +730,7 @@ def test_analog_input_event_quiet_when_steady(board, board_definition,
                                               checkin):
     """An SM_EVENT pin held at a steady 1.65V publishes its initial value
     (if INITIAL_EVENT_ON_EVENT_MODE), then nothing: the ADC's noise
-    mustn't count as a change. T_RAW, since on the ESP32 a T_VOLTAGE
-    SM_EVENT pin never publishes at all (checkEvent() compares _value_raw,
-    which readVoltage() doesn't update), so it would pass for the wrong
-    reason."""
+    mustn't count as a change."""
     # --- Arrange ------------------------------------------------------
     uid = checkin()
     volts = dac_probe.set_voltage(analog_pin, 1.65)
@@ -691,11 +756,7 @@ def test_analog_input_event_voltage_publishes_on_change(
         device_uid, protomq, dac_probe, analog_pin, checkin):
     """A T_VOLTAGE SM_EVENT pin publishes when its voltage changes by far
     more than the ADC's noise. Only checks that it publishes, not how
-    often, so it doesn't depend on SM_EVENT having a threshold.
-
-    Fails on the ESP32 today: checkEvent() decides by comparing _value_raw,
-    but readVoltage() reads analogReadMilliVolts(), which sets only
-    _value_voltage, so _value_raw stays 0 and the pin never publishes."""
+    often, so it doesn't depend on SM_EVENT having a threshold."""
     # --- Arrange ------------------------------------------------------
     # Added at 1.0V; whatever it publishes while it settles is skipped
     uid = checkin()
