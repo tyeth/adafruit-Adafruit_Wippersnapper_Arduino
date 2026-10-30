@@ -905,6 +905,9 @@ class SerialMonitor:
         self._partial = bytearray()
         self._partial_time = 0.0
         self._cursor = 0
+        # Offset into the line at the cursor where expect() resumes, set
+        # when expect(partial=True) matched it before its newline arrived
+        self._cursor_col = 0
         self._boot = 0
         self._epoch = 0  # bumped by board_reset() to drop reads started before it
         self._read_epoch = 0  # epoch of the reader's current read
@@ -1027,6 +1030,7 @@ class SerialMonitor:
                 ser.reset_input_buffer()
                 self._partial.clear()
                 self._boot = self._cursor = len(self._lines)
+                self._cursor_col = 0
                 self._cond.wait_for(
                     lambda: self._read_epoch == self._epoch or self._error,
                     timeout=1,
@@ -1068,6 +1072,7 @@ class SerialMonitor:
                 self.port = str(port)
                 self._error = None
                 self._boot = self._cursor = len(self._lines)
+                self._cursor_col = 0
             self._open()
         except HilBoardUtilsError as e:
             with self._cond:  # expect()/assert_none() report it instead of waiting
@@ -1093,9 +1098,11 @@ class SerialMonitor:
     def _compile(pattern):
         return pattern if isinstance(pattern, re.Pattern) else re.compile(pattern)
 
-    def _search(self, regex, start):
+    def _search(self, regex, start, col=0):
+        """The first line from index start that matches regex, and the
+        match; the search in line start begins at offset col."""
         for line in self._lines[start:]:
-            m = regex.search(line.text)
+            m = regex.search(line.text, col if line.index == start else 0)
             if m:
                 return line, m
         return None, None
@@ -1110,11 +1117,21 @@ class SerialMonitor:
     def _port_error(self):
         return SerialError(f"{self.port}: serial port lost: {self._error}")
 
-    def expect(self, pattern, timeout=10):
+    def _pending_text(self):
+        """The line still waiting for its newline, decoded as _emit() will."""
+        return ANSI_ESCAPE_RE.sub(
+            "", self._partial.decode(errors="replace")).rstrip("\r")
+
+    def expect(self, pattern, timeout=10, partial=False):
         """Wait for the first line at or after the cursor that matches
         pattern, move the cursor past that line, and return the re.Match
         (the line is m.string). Consecutive expect() calls therefore check
         order. Raises SerialTimeout, or SerialError if the port drops.
+
+        With partial, also search the line still waiting for its newline,
+        for output the firmware prints without one. A match there moves
+        the cursor to just past the match within that line, so the next
+        expect() resumes there, and m.string is the line so far.
         """
         __tracebackhide__ = True
         regex = self._compile(pattern)
@@ -1122,10 +1139,20 @@ class SerialMonitor:
         with self._cond:
             start = pos = self._cursor
             while True:
-                line, m = self._search(regex, pos)
+                line, m = self._search(
+                    regex, pos, self._cursor_col if pos == self._cursor else 0)
                 if m:
                     self._cursor = line.index + 1
+                    self._cursor_col = 0
                     return m
+                if partial and self._partial:
+                    col = (self._cursor_col
+                           if self._cursor == len(self._lines) else 0)
+                    m = regex.search(self._pending_text(), col)
+                    if m:
+                        self._cursor = len(self._lines)
+                        self._cursor_col = m.end()
+                        return m
                 pos = len(self._lines)  # don't rescan lines already checked
                 if self._error:
                     raise self._port_error()

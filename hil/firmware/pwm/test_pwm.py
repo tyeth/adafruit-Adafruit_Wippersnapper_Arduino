@@ -99,12 +99,13 @@ def test_pwm_add(board, board_definition, secrets_name, flashed_board,
     _add(serial, protomq, uid, pwm_pin)
 
 
-def _write_duty(protomq, uid, pin, duty_cycle):
-    """Send a pwm.Write of duty_cycle to pin and expect the DUT to report
-    no error for it."""
+def _write_duty(serial, protomq, uid, pin, duty_cycle):
+    """Send a pwm.Write of duty_cycle to pin and expect the DUT to apply
+    it and report no error for it."""
     write = {"pin": pin, "dutyCycle": duty_cycle}
     protomq.publish(uid, {"pwm": {"write": write}})
     protomq.expect_b2d_message(uid, "pwm.write", match=write, timeout=5)
+    serial.expect(WRITE_LOG.format(pin=pin, value=duty_cycle), timeout=5)
     # Handle_PWM_Write() publishes a component error on failure. This also
     # gives the DUT time to apply the write.
     protomq.assert_no_d2b_message(uid, "error.component", match={"pin": pin},
@@ -146,7 +147,7 @@ def test_pwm_duty_cycle_sweep(board, board_definition, secrets_name,
     # The broker sweeps the PWM pin through 25%, 50% and 75% duty, and the
     # pulse probe measures each over DUTY_PERIODS periods
     for duty_cycle in (1024, 2048, 3072):
-        _write_duty(protomq, uid, pwm_pin, duty_cycle)
+        _write_duty(serial, protomq, uid, pwm_pin, duty_cycle)
         _assert_pwm(pulse_probe, pwm_pin, duty_cycle, DEFAULT_RESOLUTION,
                     DEFAULT_FREQUENCY)
 
@@ -169,7 +170,7 @@ def test_pwm_ledc_duty_scan(board, board_definition, secrets_name,
     # ledcWrite() unscaled for the pulse probe to measure that duty
     for fraction in SCAN_DUTIES:
         duty_cycle = round(fraction * 2 ** resolution)
-        _write_duty(protomq, uid, pwm_pin, duty_cycle)
+        _write_duty(serial, protomq, uid, pwm_pin, duty_cycle)
         _assert_pwm(pulse_probe, pwm_pin, duty_cycle, resolution,
                     DEFAULT_FREQUENCY)
 
@@ -185,18 +186,18 @@ def test_pwm_duty_min_max_cycle(board, board_definition, secrets_name,
     # so each end is a change from a toggling pin
     uid = checkin()
     _add(serial, protomq, uid, pwm_pin)
-    _write_duty(protomq, uid, pwm_pin, 2048)
+    _write_duty(serial, protomq, uid, pwm_pin, 2048)
     _assert_pwm(pulse_probe, pwm_pin, 2048, DEFAULT_RESOLUTION,
                 DEFAULT_FREQUENCY)
 
     # --- Act / Assert -------------------------------------------------
     # Top end: ledcWrite() turns the maximum, 2 ** 12 - 1, into fully on,
     # so the pin holds HIGH with no edges
-    _write_duty(protomq, uid, pwm_pin, 2 ** DEFAULT_RESOLUTION - 1)
+    _write_duty(serial, protomq, uid, pwm_pin, 2 ** DEFAULT_RESOLUTION - 1)
     _assert_quiet(pulse_probe, pwm_pin, level=True)
 
     # Bottom end: 0 holds the pin LOW with no edges
-    _write_duty(protomq, uid, pwm_pin, 0)
+    _write_duty(serial, protomq, uid, pwm_pin, 0)
     _assert_quiet(pulse_probe, pwm_pin, level=False)
 
 
@@ -264,7 +265,7 @@ def test_duty_update_timing(board, board_definition, secrets_name,
     period_us = 1e6 / DEFAULT_FREQUENCY
     uid = checkin()
     _add(serial, protomq, uid, pwm_pin)
-    _write_duty(protomq, uid, pwm_pin, old)
+    _write_duty(serial, protomq, uid, pwm_pin, old)
     _assert_pwm(pulse_probe, pwm_pin, old, DEFAULT_RESOLUTION,
                 DEFAULT_FREQUENCY)
 
@@ -337,7 +338,7 @@ def test_pwm_remove(board, board_definition, secrets_name, flashed_board,
     # The PWM pin runs at 50%, 12-bit, 5 kHz
     uid = checkin()
     _add(serial, protomq, uid, pwm_pin)
-    _write_duty(protomq, uid, pwm_pin, 2048)
+    _write_duty(serial, protomq, uid, pwm_pin, 2048)
     _assert_pwm(pulse_probe, pwm_pin, 2048, DEFAULT_RESOLUTION,
                 DEFAULT_FREQUENCY)
 
@@ -379,7 +380,7 @@ def test_pwm_modify(board, board_definition, secrets_name, flashed_board,
     # The PWM pin runs at 25%, 12-bit, 5 kHz
     uid = checkin()
     _add(serial, protomq, uid, pwm_pin)
-    _write_duty(protomq, uid, pwm_pin, 1024)
+    _write_duty(serial, protomq, uid, pwm_pin, 1024)
     _assert_pwm(pulse_probe, pwm_pin, 1024, DEFAULT_RESOLUTION,
                 DEFAULT_FREQUENCY)
 
@@ -410,7 +411,7 @@ def _assert_valid_config(serial, protomq, uid, pulse_probe, pin):
     """Add pin at 5 kHz, 12-bit, write 50% and measure it, showing the DUT
     still takes a valid configuration."""
     _add(serial, protomq, uid, pin)
-    _write_duty(protomq, uid, pin, 2048)
+    _write_duty(serial, protomq, uid, pin, 2048)
     _assert_pwm(pulse_probe, pin, 2048, DEFAULT_RESOLUTION, DEFAULT_FREQUENCY)
 
 
@@ -427,9 +428,9 @@ def test_pwm_invalid_values(board, board_definition, secrets_name,
     # --- Act / Assert -------------------------------------------------
     # Duty above 2 ** 12: ledcWrite() clamps it to fully on, so the pin
     # holds HIGH with no error
-    _write_duty(protomq, uid, pwm_pin, MAX_DUTY_CYCLE)
+    _write_duty(serial, protomq, uid, pwm_pin, MAX_DUTY_CYCLE)
     _assert_quiet(pulse_probe, pwm_pin, level=True)
-    _write_duty(protomq, uid, pwm_pin, 2048)
+    _write_duty(serial, protomq, uid, pwm_pin, 2048)
     _assert_pwm(pulse_probe, pwm_pin, 2048, DEFAULT_RESOLUTION,
                 DEFAULT_FREQUENCY)
 
