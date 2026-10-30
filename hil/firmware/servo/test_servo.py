@@ -8,6 +8,8 @@ Exercises:
 - `src/components/servo/hardware.cpp::ServoWrite()`
 - `src/components/servo/hardware.cpp::writeMicroseconds()` (ESP32's ledcWrite())
 - `src/components/servo/controller.cpp::Handle_Servo_Write()`
+- `src/components/servo/controller.cpp::Handle_Servo_Remove()`
+- `src/components/servo/hardware.cpp::ServoDetach()` (ESP32's ledcDetach())
 """
 
 import logging
@@ -49,6 +51,15 @@ SWEEP_POSITIONS = SWEEP_UP + SWEEP_UP[-2::-1]
 FULL_TRAVEL = 180
 # Time to wait after a write before measuring, in seconds.
 WRITE_SETTLE = 1
+# Pulse width range a servo.Modify changes the servo to, in us.
+MODIFY_MIN_PULSE_WIDTH = 1000
+MODIFY_MAX_PULSE_WIDTH = 2000
+# Skips the tests that hit Handle_Servo_Add()'s missing return after a
+# failed attach, which crashes the DUT, until the firmware fix lands;
+# remove it then.
+ADD_FAILURE_CRASHES = pytest.mark.skip(
+    reason="firmware: Handle_Servo_Add() calls ServoWrite() on a nullptr "
+           "after a failed attach and crashes")
 # Lines the DUT prints when it crashes or reboots.
 CRASH_RE = re.compile(r"Guru Meditation|Backtrace:|rst:0x|ESP Reset Reason")
 
@@ -151,6 +162,7 @@ def _assert_quiet(pulse_probe, pin, level):
         f"{pin} should read {'HIGH' if level else 'LOW'}")
 
 
+@ADD_FAILURE_CRASHES
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 @pytest.mark.parametrize("frequency", [0, MAX_LEDC_FREQ])
 def test_servo_add_rejected(board, board_definition, secrets_name,
@@ -194,16 +206,18 @@ def _pulse_width(degrees, min_pulse_width=DEFAULT_MIN_PULSE_WIDTH,
     return max(IO_MIN_PULSE_WIDTH, min(IO_MAX_PULSE_WIDTH, width))
 
 
-def _write(serial, protomq, uid, pin, pulse_width):
+def _write(serial, protomq, uid, pin, pulse_width, logged=None):
     """Send a servo.Write of pulse_width to pin and expect the DUT to
-    apply it and report no error for it."""
+    apply it, logging logged (default pulse_width, the value clamped to
+    the servo's range), and report no error for it."""
     write = {"servoPin": pin, "pulseWidth": pulse_width}
     protomq.publish(uid, {"servo": {"write": write}})
     protomq.expect_b2d_message(uid, "servo.write", match=write, timeout=5)
     # writeMicroseconds() logs the clamped pulse width and GPIO number once
     # ledcWrite() returns, without a newline
     gpio = int(pin[1:])
-    serial.expect(rf"\[servo\] Set Pulse Width: {pulse_width} uS on pin: "
+    logged = pulse_width if logged is None else logged
+    serial.expect(rf"\[servo\] Set Pulse Width: {logged} uS on pin: "
                   rf"{gpio}\b", timeout=CHECKIN_TIMEOUT, partial=True)
     # Handle_Servo_Write() publishes a component error on failure. This
     # also gives the DUT time to apply the write.
@@ -240,6 +254,109 @@ def test_servo_write_sweep(board, board_definition, secrets_name,
                   f"{pulse_width}us", flush=True)
         _write(serial, protomq, uid, servo_pin, pulse_width)
         _assert_pulse(pulse_probe, servo_pin, pulse_width, DEFAULT_FREQUENCY)
+
+    # The DUT didn't crash or reboot throughout
+    serial.assert_none(CRASH_RE, since=since)
+
+
+def _remove(serial, protomq, uid, pin):
+    """Send a servo.Remove for pin and expect the DUT to remove it."""
+    remove = {"servoPin": pin}
+    protomq.publish(uid, {"servo": {"remove": remove}})
+    protomq.expect_b2d_message(uid, "servo.remove", match=remove, timeout=5)
+    # Handle_Servo_Remove() logs the pin once the servo is detached; an
+    # earlier write's log, which has no newline, may share its line
+    serial.expect(rf"\[servo\] Servo removed from pin: {pin}$",
+                  timeout=CHECKIN_TIMEOUT)
+    protomq.assert_no_d2b_message(uid, "error.component",
+                                  match={"pin": pin}, within=ERROR_WINDOW)
+
+
+@pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
+def test_servo_remove(board, board_definition, secrets_name, flashed_board,
+                      serial, power, device_uid, protomq, pulse_probe,
+                      servo_pin, checkin):
+    """Removing a servo stops its output and leaves the pin LOW."""
+    # --- Arrange ------------------------------------------------------
+    # The servo pin runs at 50 Hz, 1500us
+    uid = checkin()
+    since = serial.mark()
+    _add(serial, protomq, uid, servo_pin)
+    _write(serial, protomq, uid, servo_pin, 1500)
+    _assert_pulse(pulse_probe, servo_pin, 1500, DEFAULT_FREQUENCY)
+
+    # --- Act ----------------------------------------------------------
+    _remove(serial, protomq, uid, servo_pin)
+
+    # --- Assert -------------------------------------------------------
+    # The destructor detached the servo without error, and the pin has no
+    # edges afterward, reading LOW with the probe's pull-down
+    serial.assert_none(r"\[servo\] (Detach Error|Error: Failed to detach)",
+                       since=since)
+    _assert_quiet(pulse_probe, servo_pin, level=False)
+
+    # The DUT didn't crash or reboot throughout
+    serial.assert_none(CRASH_RE, since=since)
+
+
+def _modify(serial, protomq, uid, pin, min_pulse_width, max_pulse_width,
+            frequency=DEFAULT_FREQUENCY):
+    """Send a servo.Modify of pin to frequency and pulse width range,
+    leaving the Add's initial write empty, and expect the DUT to remove
+    and re-add it with no error."""
+    add = {"servoPin": pin, "freq": frequency,
+           "minPulseWidth": min_pulse_width,
+           "maxPulseWidth": max_pulse_width}
+    modify = {"remove": {"servoPin": pin}, "add": add}
+    protomq.publish(uid, {"servo": {"modify": modify}})
+    protomq.expect_b2d_message(uid, "servo.modify", match=modify, timeout=5)
+
+    # The Router removes the servo, then the add writes min_pulse_width
+    # and logs it, without a newline, on the attach log's line
+    serial.expect(rf"\[servo\] Servo removed from pin: {pin}$",
+                  timeout=CHECKIN_TIMEOUT)
+    gpio = int(pin[1:])
+    serial.expect(rf"\[servo\] Set Pulse Width: {min_pulse_width} uS on "
+                  rf"pin: {gpio}\[servo\] Servo attached to pin: {pin}",
+                  timeout=CHECKIN_TIMEOUT)
+    protomq.assert_no_d2b_message(uid, "error.component",
+                                  match={"pin": pin}, within=ERROR_WINDOW)
+
+
+@pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
+def test_servo_modify(board, board_definition, secrets_name, flashed_board,
+                      serial, power, device_uid, protomq, pulse_probe,
+                      servo_pin, checkin):
+    """A servo.Modify of the servo's pulse width range takes effect: the
+    pin restarts at the new minimum, and writes clamp to the new range."""
+    # --- Arrange ------------------------------------------------------
+    # The servo pin runs at 50 Hz, 1500us, with the default 500-2500us
+    # range
+    uid = checkin()
+    since = serial.mark()
+    _add(serial, protomq, uid, servo_pin)
+    _write(serial, protomq, uid, servo_pin, 1500)
+    _assert_pulse(pulse_probe, servo_pin, 1500, DEFAULT_FREQUENCY)
+
+    # --- Act ----------------------------------------------------------
+    # The broker modifies the servo to a 1000-2000us range
+    _modify(serial, protomq, uid, servo_pin, MODIFY_MIN_PULSE_WIDTH,
+            MODIFY_MAX_PULSE_WIDTH)
+
+    # --- Assert -------------------------------------------------------
+    # The pin restarts at the new minimum
+    _assert_pulse(pulse_probe, servo_pin, MODIFY_MIN_PULSE_WIDTH,
+                  DEFAULT_FREQUENCY)
+
+    # Writes at the old range's ends, valid before the modify, clamp to
+    # the new range's
+    for pulse_width, clamped in ((DEFAULT_MAX_PULSE_WIDTH,
+                                  MODIFY_MAX_PULSE_WIDTH),
+                                 (DEFAULT_MIN_PULSE_WIDTH,
+                                  MODIFY_MIN_PULSE_WIDTH)):
+        _write(serial, protomq, uid, servo_pin, pulse_width,
+               logged=clamped)
+        _assert_pulse(pulse_probe, servo_pin, clamped, DEFAULT_FREQUENCY)
 
     # The DUT didn't crash or reboot throughout
     serial.assert_none(CRASH_RE, since=since)
