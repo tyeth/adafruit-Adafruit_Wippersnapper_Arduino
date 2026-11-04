@@ -103,8 +103,13 @@ before every power change or flash:
                        "pin_map": {"D14": "GPA0"}},
       "pwm_input": {"type": "pi_gpio", "pin_map": {"D27": "D16"}},
       "analog_input": {"type": "mcp4728_dac", "address": "0x60",
-                       "pin_map": {"A34": "A"}}
+                       "pin_map": {"A34": "A"}},
+      "i2c_bus": {"type": "i2c_devices", "port": 0, "addresses": ["0x77"]}
     }
+
+The i2c_bus probe lists the devices wired to the DUT's I2C port (the
+i2cPortId in definition.json): the i2c_devices fixture gives their
+addresses, and i2c_address_space the port's pins as an i2c AddressSpace.
 """
 
 import copy
@@ -289,6 +294,22 @@ def pytest_collection_modifyitems(config, items):
         config.hook.pytest_deselected(items=deselected)
     # The api tests first, so their shared flash happens once, up front.
     items[:] = sorted(selected, key=lambda i: not i.stash.get(SHARED_FLASH, False))
+
+
+def pytest_generate_tests(metafunc):
+    """Parametrize a test's device_address over the board entry's i2c_bus
+    probe addresses, one test per device, e.g. [0x77]."""
+    if "device_address" not in metafunc.fixturenames:
+        return
+    config = metafunc.config
+    probe = load_board_entry(config.getoption("boards"),
+                             config.getoption("board")).get("probes", {}).get("i2c_bus")
+    try:
+        addresses = hil_probe.i2c_bus_devices(probe)[1] if probe else []
+    except hil_probe.ProbeError:
+        addresses = []  # the i2c_devices fixture fails the test with why
+    metafunc.parametrize("device_address", addresses or [None],
+                         ids=[f"0x{a:02x}" for a in addresses] or ["none"])
 
 
 @pytest.fixture(scope="session")
@@ -496,6 +517,37 @@ def onewire_pin(board):
         return hil_probe.onewire_sensor_pin(config)
     except hil_probe.ProbeError as e:
         pytest.fail(f"board '{board.name}': {e}", pytrace=False)
+
+
+@dataclass(frozen=True)
+class I2cDevices:
+    port: int        # the i2cPortId in the board's definition.json
+    addresses: list  # sorted, e.g. [0x77]
+
+
+@pytest.fixture
+def i2c_devices(board):
+    """The I2C port and device addresses the board entry's i2c_bus probe
+    says are wired to the DUT; skips the test if the entry has none."""
+    config = _probe_config(board, "i2c_bus")
+    try:
+        return I2cDevices(*hil_probe.i2c_bus_devices(config))
+    except hil_probe.ProbeError as e:
+        pytest.fail(f"board '{board.name}': {e}", pytrace=False)
+
+
+@pytest.fixture
+def i2c_address_space(board_definition, i2c_devices):
+    """The i2c_bus probe's port as an i2c AddressSpace, as ProtoMQ's JSON
+    has it, from the port's pins in definition.json, e.g.
+    {"pinScl": "D20", "pinSda": "D22"}. No mux, so muxAddress and
+    muxChannel are left out, as proto3 JSON leaves out zero values."""
+    ports = board_definition.definition.get("components", {}).get("i2cPorts", [])
+    for port in ports:
+        if port.get("i2cPortId") == i2c_devices.port:
+            return {"pinScl": f"D{port['SCL']}", "pinSda": f"D{port['SDA']}"}
+    pytest.fail(f"{board_definition.path} has no i2cPorts entry with "
+                f"i2cPortId {i2c_devices.port}", pytrace=False)
 
 
 @pytest.fixture

@@ -44,7 +44,8 @@ wired to the DUT's pins, one probe per role, each with a hardware `type`:
   "digital_gpio": { "type": "mcp23017_gpio", "address": "0x20", "pin_map": { "D14": "GPA0" } },
   "pwm_input": { "type": "pi_gpio", "pin_map": { "D27": "D16" } },
   "analog_input": { "type": "mcp4728_dac", "address": "0x60", "pin_map": { "A34": "A" } },
-  "onewire_sensor": { "type": "ds18b20", "pin": "D33" }
+  "onewire_sensor": { "type": "ds18b20", "pin": "D33" },
+  "i2c_bus": { "type": "i2c_devices", "port": 0, "addresses": ["0x77"] }
 }
 ```
 
@@ -71,6 +72,12 @@ wired to the DUT's pins, one probe per role, each with a hardware `type`:
 - `onewire_sensor` (`ds18b20`): the `ds18x20/` tests talk to a DS18B20
   wired to the DUT, not to this host. `pin` is the DUT pin its data line is
   on, the name the broker sends (e.g. `D33`), with a 4.7k pull-up to 3V.
+- `i2c_bus` (`i2c_devices`): the `i2c/` tests probe the I2C devices wired
+  to the DUT, not to this host. `port` is the `i2cPortId` in the board's
+  Wippersnapper_Boards `definition.json`, whose `SCL`/`SDA` give the pins
+  the tests send (e.g. `D20`/`D22`). `addresses` must list every device on
+  that bus (e.g. `["0x77"]` for a BME680): the scan-all test expects
+  exactly these. Add to it when wiring more devices.
 
 Tests that need a probe are skipped on boards without one.
 

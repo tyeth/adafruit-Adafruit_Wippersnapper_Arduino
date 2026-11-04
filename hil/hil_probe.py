@@ -69,7 +69,7 @@ import time
 # each supports.
 PROBE_TYPES = {"digital_gpio": ("mcp23017_gpio",), "pwm_input": ("pi_gpio",),
                "analog_input": ("mcp4728_dac",),
-               "onewire_sensor": ("ds18b20",)}
+               "onewire_sensor": ("ds18b20",), "i2c_bus": ("i2c_devices",)}
 EXPANDER_PINS = 16
 EXPANDER_PIN_RE = re.compile(r"^GP([AB])([0-7])$")
 # A DUT digital pin name as the broker sends it; the firmware's
@@ -114,6 +114,40 @@ def onewire_sensor_pin(config):
         raise ProbeError(f"onewire_sensor probe 'pin' must be a DUT digital "
                          f"pin like 'D33', got {pin!r}")
     return pin
+
+
+# The 7-bit I2C addresses a device can have; the rest are reserved, and the
+# firmware's ProbeAddresses() skips them
+I2C_ADDRESS_MIN, I2C_ADDRESS_MAX = 0x08, 0x77
+
+
+def i2c_bus_devices(config):
+    """An i2c_bus probe's DUT I2C port and the addresses of the devices
+    wired to it: (port id, sorted addresses). The port id is the
+    i2cPortId in the board's definition.json."""
+    _check_type("i2c_bus", config)
+    port = config.get("port", 0)
+    if isinstance(port, bool) or not isinstance(port, int) or port < 0:
+        raise ProbeError(f"i2c_bus probe 'port' must be an i2cPortId like 0, "
+                         f"got {port!r}")
+    addresses = config.get("addresses")
+    if not isinstance(addresses, list) or not addresses:
+        raise ProbeError(f"i2c_bus probe 'addresses' must be a list like "
+                         f"[\"0x77\"], got {addresses!r}")
+    parsed = []
+    for address in addresses:
+        try:
+            value = int(address, 16)
+        except (TypeError, ValueError):
+            value = None
+        if value is None or not I2C_ADDRESS_MIN <= value <= I2C_ADDRESS_MAX:
+            raise ProbeError(f"i2c_bus probe address must be hex "
+                             f"0x{I2C_ADDRESS_MIN:02x}-0x{I2C_ADDRESS_MAX:02x}, "
+                             f"got {address!r}")
+        if value in parsed:
+            raise ProbeError(f"i2c_bus probe address {address!r} is listed twice")
+        parsed.append(value)
+    return port, sorted(parsed)
 
 
 class Probe:

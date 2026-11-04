@@ -313,6 +313,21 @@ class ProtoMQ:
         ms = message.get("time")
         return None if ms is None else ms / 1000
 
+    def d2b_mark(self, client_id):
+        """The seq of client_id's latest D2B message so far (0 if none), to
+        pass to d2b_since()."""
+        messages = self._messages(client_id, "outbox")
+        return messages[-1]["seq"] if messages else 0
+
+    def d2b_since(self, client_id, path, mark):
+        """The values at the dot path of client_id's D2B messages after
+        mark (from d2b_mark()), oldest first, whatever the cursor of the
+        expect_* calls. Doesn't move it."""
+        values = [get_path(m["payload"], path)
+                  for m in self._messages(client_id, "outbox")
+                  if m["seq"] > mark]
+        return [v for v in values if v is not None]
+
     def assert_no_d2b_message(self, client_id, path, *, match=None, within,
                               interval=0.05):
         """Watch for within seconds that client_id sends no D2B message with
