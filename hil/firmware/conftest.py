@@ -36,6 +36,13 @@ set on the HIL host, never from the repo:
                                      ~/ProtoMQ
     HIL_WS_BOARDS_DIR                optional, the Wippersnapper_Boards
                                      checkout, default ~/Wippersnapper_Boards
+    HIL_WS_COMPONENTS_DIR            optional, the Wippersnapper_Components
+                                     checkout (main), default
+                                     ~/Wippersnapper_Components (i2c tests,
+                                     see i2c/conftest.py)
+    HIL_WS_PROTOBUF_DIR              optional, the Wippersnapper_Protobuf
+                                     checkout (api-v2), default
+                                     ~/Wippersnapper_Protobuf (i2c tests)
 
 The valid IO credentials point the DUT at a ProtoMQ broker on this host,
 which the protomq fixture starts for the test and stops after it, with
@@ -381,7 +388,6 @@ def board_definition(board):
     log.info("board definition: %s at Wippersnapper_Boards %s",
              definition.path, definition.commit)
     return definition
-
 
 
 # --- Secrets and credentials ----------------------------------------------

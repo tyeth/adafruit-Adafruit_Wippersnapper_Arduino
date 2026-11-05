@@ -247,6 +247,21 @@ jobs:
           git clone --depth 1 https://github.com/adafruit/Wippersnapper_Boards.git \
             "$HOME/Wippersnapper_Boards"
           git -C "$HOME/Wippersnapper_Boards" log -1 --format='Wippersnapper_Boards @ %h %s'
+      # Component definitions and sensors.json (main), refreshed the same way.
+      - name: Refresh Wippersnapper_Components
+        run: |
+          rm -rf "$HOME/Wippersnapper_Components"
+          git clone --depth 1 --branch main https://github.com/adafruit/Wippersnapper_Components.git \
+            "$HOME/Wippersnapper_Components"
+          git -C "$HOME/Wippersnapper_Components" log -1 --format='Wippersnapper_Components @ %h %s'
+      # sensor.proto's ws.sensor.Type enum (api-v2), which sensors.json's
+      # typeEnum values are checked against.
+      - name: Refresh Wippersnapper_Protobuf
+        run: |
+          rm -rf "$HOME/Wippersnapper_Protobuf"
+          git clone --depth 1 --branch api-v2 https://github.com/adafruit/Wippersnapper_Protobuf.git \
+            "$HOME/Wippersnapper_Protobuf"
+          git -C "$HOME/Wippersnapper_Protobuf" log -1 --format='Wippersnapper_Protobuf @ %h %s'
 
   hil-test:
     name: 🧪HIL ${{ matrix.board }} (${{ (github.event_name == 'release' || inputs.suite == 'full') && 'full' || 'api' }})

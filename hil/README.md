@@ -18,6 +18,10 @@ export HIL_PROTOMQ_PORT=1884                                 # MQTT port
 export HIL_PROTOMQ_HTTP_PORT=5173                            # API/web UI port
 export HIL_PROTOMQ_DIR=~/ProtoMQ                             # checkout
 export HIL_WS_BOARDS_DIR=~/Wippersnapper_Boards               # board definitions
+export HIL_WS_COMPONENTS_DIR=~/Wippersnapper_Components       # component definitions (main)
+export HIL_WS_PROTOBUF_DIR=~/Wippersnapper_Protobuf           # sensor.proto (api-v2)
+# The i2c tests build an Add's types from the component definition:
+#   git clone https://github.com/adafruit/Wippersnapper_Components.git ~/Wippersnapper_Components
 
 pytest firmware/provisioning/ --log-cli-level=INFO
 ```
