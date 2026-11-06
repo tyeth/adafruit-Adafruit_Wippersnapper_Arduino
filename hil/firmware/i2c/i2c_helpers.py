@@ -1,6 +1,6 @@
 """
-Shared helpers for the I2C sensor HIL tests (test_i2c_api.py, and each
-sensor's test_i2c_<sensor>.py).
+Shared helpers for the I2C sensor HIL tests (test_i2c_api.py and
+test_i2c_sensors.py).
 
 Component definitions: load_sensor_types() maps each sensor type string
 in a Wippersnapper_Components checkout's components/sensors.json to its
@@ -35,6 +35,7 @@ import logging
 import math
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -359,20 +360,9 @@ def modify(serial, protomq, uid, dev, address_space, types, period=PERIOD):
     serial.assert_none(r"^\[i2c\] WARNING: Remove failed in modify")
 
 
-def expect_event(protomq, uid, dev, address_space, timeout, types,
-                 value_range=None):
-    """Expect the broker to get an i2c.Event for dev on address_space,
-    holding a sensor event per entry in the Add's types map
-    ({key: ws.sensor.Type}), under the same key, each a finite floatValue
-    (and within value_range[type], (low, high), where given). Returns when
-    the broker received it, in seconds since the epoch, and {type: value}.
-
-    ProtoMQ decodes the events map into a JSON object, whose integer keys
-    come out in ascending order whatever their order on the wire, so the
-    order checked is that of the keys."""
-    event = protomq.expect_d2b_message(
-        uid, "i2c.event", match={"descriptor": {"address": dev.address}},
-        timeout=timeout)
+def _check_event(dev, address_space, event, types, value_range):
+    """Check an i2c.Event for dev (see expect_event()); returns its
+    {type: value}."""
     got_descriptor = event.get("descriptor", {})
     # Exact, not ProtoMQ's partial match: the DUT sends the bus's pins, and
     # no mux fields for a device on the bus
@@ -396,9 +386,79 @@ def expect_event(protomq, uid, dev, address_space, timeout, types,
             assert low <= value <= high, (
                 f"expected {kind} {low}-{high}, got {value}: {event}")
         values[kind] = value
+    return values
+
+
+def expect_event(protomq, uid, dev, address_space, timeout, types,
+                 value_range=None):
+    """Expect the broker to get an i2c.Event for dev on address_space,
+    holding a sensor event per entry in the Add's types map
+    ({key: ws.sensor.Type}), under the same key, each a finite floatValue
+    (and within value_range[type], (low, high), where given). Returns when
+    the broker received it, in seconds since the epoch, and {type: value}.
+
+    ProtoMQ decodes the events map into a JSON object, whose integer keys
+    come out in ascending order whatever their order on the wire, so the
+    order checked is that of the keys."""
+    event = protomq.expect_d2b_message(
+        uid, "i2c.event", match={"descriptor": {"address": dev.address}},
+        timeout=timeout)
+    values = _check_event(dev, address_space, event, types, value_range)
     received = protomq.last_d2b_time(uid)
     log.info("0x%02x: %s at %s", dev.address, values, received)
     return received, values
+
+
+def _event_types(event):
+    return {key: e.get("type") for key, e in event.get("events", {}).items()}
+
+
+def collect_full_events(protomq, uid, sensors, address_space, mark, timeout,
+                        interval=0.5):
+    """Wait up to timeout for an i2c.Event since mark (from d2b_mark()) from
+    each of several devices added at once, holding every type in its Add,
+    and check it as expect_event() does. sensors is a list of (I2cDevice,
+    types, value_range). Returns ({address: {type: value}} for the devices
+    whose event passed, {address: why} for the rest), so one bad device
+    doesn't hide the others' results.
+
+    Reads every event since mark, not expect_d2b_message()'s cursor, which
+    is shared by all i2c.events: waiting on one device would skip past the
+    others'. Events holding only some of a device's types are skipped: a
+    driver whose metrics warm up at different rates publishes the ones that
+    read (update()'s "Failed to read sensor key=" for the rest)."""
+    by_address = {dev.address: (dev, types, value_range)
+                  for dev, types, value_range in sensors}
+    found, failed, partial = {}, {}, {}
+    deadline = time.monotonic() + timeout
+    while True:
+        for event in protomq.d2b_since(uid, "i2c.event", mark):
+            address = event.get("descriptor", {}).get("address")
+            if (address in found or address in failed
+                    or address not in by_address):
+                continue
+            dev, types, value_range = by_address[address]
+            got = _event_types(event)
+            if got != dict(types) and got.items() <= dict(types).items():
+                partial[address] = got  # still warming up
+                continue
+            try:
+                found[address] = _check_event(dev, address_space, event,
+                                              types, value_range)
+                log.info("%s at 0x%02x: %s", dev.name, address,
+                         found[address])
+            except AssertionError as e:
+                failed[address] = str(e)
+        if len(found) + len(failed) == len(by_address):
+            return found, failed
+        if time.monotonic() >= deadline:
+            for address in by_address.keys() - found.keys() - failed.keys():
+                failed[address] = (
+                    f"no event with every type within {timeout}s"
+                    + (f" (last partial: {partial[address]})"
+                       if address in partial else " (no event at all)"))
+            return found, failed
+        time.sleep(interval)
 
 
 def assert_period(times, period=PERIOD):

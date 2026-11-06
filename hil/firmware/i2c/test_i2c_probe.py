@@ -2,8 +2,9 @@
 HIL tests for Adafruit Wippersnapper firmware's I2C Probe.
 
 How Does This Work?
-I2C devices (today a BME680 at 0x77) are wired to one of the DUT's I2C
-ports. The board entry's i2c_bus probe names the port (its i2cPortId in
+I2C devices (today a BME688, MAX44009, INA219, MAX17048, MLX90632,
+ENS160, SEN66 and VCNL4040) are wired to one of the DUT's I2C ports. The
+board entry's i2c_bus probe names the port (its i2cPortId in
 the board's definition.json, whose SCL/SDA pins make the AddressSpace)
 and lists every device on it (the i2c_devices and i2c_address_space
 fixtures). The broker sends an i2c.Probe for that AddressSpace, and the

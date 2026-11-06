@@ -80,8 +80,12 @@ wired to the DUT's pins, one probe per role, each with a hardware `type`:
   to the DUT, not to this host. `port` is the `i2cPortId` in the board's
   Wippersnapper_Boards `definition.json`, whose `SCL`/`SDA` give the pins
   the tests send (e.g. `D20`/`D22`). `addresses` must list every device on
-  that bus (e.g. `["0x77"]` for a BME680): the scan-all test expects
-  exactly these. Add to it when wiring more devices.
+  that bus (e.g. `["0x77"]` for a BME688): the scan-all test expects
+  exactly these. Add to it when wiring more devices. test_i2c_sensors.py
+  expects each sensor at the Adafruit breakout's
+  default address: MAX17048 `0x36` (with a LiPo attached, it's powered
+  from the cell), MLX90632 `0x3a`, INA219 `0x40`, MAX44009 `0x4a`,
+  ENS160 `0x53`, VCNL4040 `0x60`, SEN66 `0x6b`, BME688 `0x77`.
 
 Tests that need a probe are skipped on boards without one.
 

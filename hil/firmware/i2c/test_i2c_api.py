@@ -2,10 +2,10 @@
 HIL tests for Adafruit Wippersnapper firmware's I2C sensor API: adding,
 reading, modifying and removing an I2C sensor, and the errors for Adds
 and Removes the DUT rejects. Sensor-agnostic: what's checked is the API,
-not the readings, which each sensor's test_i2c_<sensor>.py checks.
+not the readings, which test_i2c_sensors.py checks.
 
 How Does This Work?
-API_DEVICE, an I2C sensor with at least 5 subcomponents (today a BME680
+API_DEVICE, an I2C sensor with at least 5 subcomponents (today a BME688
 at 0x77), is wired to one of the DUT's I2C ports; the board entry's
 i2c_bus probe names the port and lists the device (the i2c_devices and
 i2c_address_space fixtures). Its component definition in
@@ -45,7 +45,7 @@ from i2c_helpers import (CHECKIN_TIMEOUT, FIRST_EVENT_TIMEOUT, INTERVAL_LATE,
 
 # The sensor the API tests drive: its driver/component name and address.
 # Any supported I2C sensor with at least 5 subcomponents will do.
-API_DEVICE = ("bme680", 0x77)
+API_DEVICE = ("bme688", 0x77)
 # Subcomponents to read, by position in the definition's subcomponents
 # array, which is also each one's key in the Add's types map
 ONE_TYPE = (0,)
@@ -57,7 +57,7 @@ MODIFIED_PERIOD = 3
 # How many intervals between events to time after the Modify
 MODIFIED_INTERVALS = 3
 # An address with nothing wired to it, in API_DEVICE's i2cAddresses (the
-# BME680's other address)
+# BME688's other address)
 EMPTY_ADDRESS = 0x76
 # Rejected Adds: {id: (changes to a valid Add, the error.component message
 # Handle_Add() publishes, a line it logs or None)}. The bus cases are the

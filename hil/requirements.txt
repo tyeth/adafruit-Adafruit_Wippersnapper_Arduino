@@ -4,5 +4,12 @@ pytest-rerunfailures>=14
 pytest-timeout>=2.3
 adafruit-circuitpython-bme680
 adafruit-circuitpython-mcp230xx
+adafruit-circuitpython-ens160
+adafruit-circuitpython-ina219
+adafruit-circuitpython-max1704x
+adafruit-circuitpython-max44009
+adafruit-circuitpython-mlx90632
+adafruit-circuitpython-sen6x
+adafruit-circuitpython-vcnl4040
 gpiod
 lgpio
