@@ -440,3 +440,130 @@ def test_i2c_mux_same_address(board, secrets_name, flashed_board, serial,
             f"channel {channel}'s readings match channel {first_channel}'s, "
             f"every one: is the mux switching? {readings[channel]}")
     i2c.assert_no_component_error(protomq, uid, mark)
+
+
+# --- Mux channel state and child lifecycle --------------------------------
+
+
+def _probe_found(protomq, uid, address_space, addresses):
+    """Send an i2c.Probe of address_space for addresses, and return the
+    sorted addresses its i2c.Probed found (none if it has no result)."""
+    protomq.publish(uid, {"i2c": {"probe": {"addressSpaces": [address_space],
+                                            "addresses": list(addresses)}}})
+    probed = protomq.expect_d2b_message(uid, "i2c.probed",
+                                        timeout=CHECKIN_TIMEOUT)
+    results = probed.get("results", [])
+    return sorted(results[0].get("foundAddresses", [])) if results else []
+
+
+@pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
+def test_i2c_mux_bus_read_leaves_channels_off(board, secrets_name,
+                                              flashed_board, serial, protomq,
+                                              checkin, i2c_devices,
+                                              i2c_address_space, i2c_mux,
+                                              bus_sensor):
+    # --- Arrange ------------------------------------------------------
+    # The devices on mux channel 0, the channel a bus device's driver
+    # stores (the Add's descriptor has no muxChannel, a zero value)
+    hidden = [a for a in i2c_mux.channels.get(0, [])
+              if a not in i2c_devices.addresses]
+    if not hidden:
+        pytest.skip("the i2c_bus probe's mux lists nothing on channel 0")
+    dev, types, value_range, space, first = bus_sensor
+    uid = checkin()
+    mark = protomq.d2b_mark(uid)
+    i2c.add_mux(serial, protomq, uid, i2c_address_space, i2c_mux)
+    i2c.add(serial, protomq, uid, dev, space, types)
+
+    # --- Act ----------------------------------------------------------
+    # The bus sensor reads: update() calls SelectDriverMux() first
+    i2c.full_events_on(protomq, uid, dev, space, types, mark, 1, first,
+                       value_range)
+
+    # --- Assert -------------------------------------------------------
+    # A bus device's read selects no mux channel, so channel 0's devices
+    # stay off the bus: a Probe of the bus alone, which selects nothing,
+    # doesn't find them
+    found = _probe_found(protomq, uid, i2c_address_space, hidden)
+    assert not found, (
+        f"after {dev.name}'s read on the bus, {i2c_mux.type} channel 0's "
+        f"{[hex(a) for a in found]} answer on the bus: the read left "
+        "channel 0 selected")
+    i2c.assert_no_component_error(protomq, uid, mark)
+
+
+@pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
+def test_i2c_mux_remove_child_wrong_channel(board, secrets_name,
+                                            flashed_board, serial, protomq,
+                                            checkin, i2c_address_space,
+                                            i2c_mux, mux_sensors):
+    # --- Arrange ------------------------------------------------------
+    dev, types, value_range, space, first = mux_sensors[0]
+    # The first channel the i2c_bus probe doesn't list the child on
+    wrong = next((c for c, found in i2c_mux.channels.items()
+                  if dev.address not in found), None)
+    if wrong is None:
+        pytest.fail(f"every {i2c_mux.type} channel lists 0x{dev.address:02x}",
+                    pytrace=False)
+    wrong_space = i2c.mux_address_space(i2c_address_space, i2c_mux, wrong)
+    uid = checkin()
+    mark = protomq.d2b_mark(uid)
+    i2c.add_mux(serial, protomq, uid, i2c_address_space, i2c_mux)
+    i2c.add(serial, protomq, uid, dev, space, types)
+    i2c.full_events_on(protomq, uid, dev, space, types, mark, 1, first,
+                       value_range)
+
+    # --- Act ----------------------------------------------------------
+    log.info("removing %s at 0x%02x on channel %d, it's on channel %d",
+             dev.name, dev.address, wrong, space.get("muxChannel", 0))
+    removed = protomq.d2b_mark(uid)
+    i2c.remove(protomq, uid, dev, wrong_space)
+
+    # --- Assert -------------------------------------------------------
+    # Handle_Remove() finds no driver at that address on that channel...
+    i2c.expect_component_error(
+        protomq, uid, "Failed to remove I2C device from MUX channel",
+        address=dev.address)
+    # ...and leaves the child on its own channel reading
+    i2c.full_events_on(protomq, uid, dev, space, types, removed, EVENTS,
+                       EVENTS * (PERIOD + INTERVAL_LATE + 5), value_range)
+    serial.assert_none(CRASH)
+
+
+@pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
+def test_i2c_mux_remove_and_readd(board, secrets_name, flashed_board, serial,
+                                  protomq, checkin, i2c_address_space,
+                                  i2c_mux, mux_sensors):
+    # --- Arrange ------------------------------------------------------
+    dev, types, value_range, space, first = mux_sensors[0]
+    uid = checkin()
+    mark = protomq.d2b_mark(uid)
+    i2c.add_mux(serial, protomq, uid, i2c_address_space, i2c_mux)
+    i2c.add(serial, protomq, uid, dev, space, types)
+    i2c.full_events_on(protomq, uid, dev, space, types, mark, 1, first,
+                       value_range)
+    # The mux's remove takes its child with it
+    msg = {"descriptor": i2c.mux_descriptor(i2c_address_space, i2c_mux)}
+    protomq.publish(uid, {"i2c": {"remove": msg}})
+    protomq.expect_b2d_message(uid, "i2c.remove", match=msg, timeout=5)
+    time.sleep(REMOVE_SETTLE)
+    gone = protomq.d2b_mark(uid)
+    time.sleep(PERIOD + REMOVED_BUFFER)
+    events = _events_from(protomq, uid, gone, dev.address)
+    assert not events, (
+        f"expected no i2c.event from {dev.name} after its mux's remove: "
+        f"{events}")
+
+    # --- Act ----------------------------------------------------------
+    # The mux, then its child, again: RemoveMux() left nothing behind
+    readded = protomq.d2b_mark(uid)
+    i2c.add_mux(serial, protomq, uid, i2c_address_space, i2c_mux)
+    i2c.add(serial, protomq, uid, dev, space, types)
+
+    # --- Assert -------------------------------------------------------
+    # The child reads through the mux again, on its channel, with no error
+    i2c.full_events_on(protomq, uid, dev, space, types, readded, EVENTS,
+                       first + EVENTS * (PERIOD + INTERVAL_LATE + 5),
+                       value_range)
+    i2c.assert_no_component_error(protomq, uid, readded)
+    serial.assert_none(CRASH)
