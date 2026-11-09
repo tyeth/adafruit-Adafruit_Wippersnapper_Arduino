@@ -28,6 +28,8 @@ import logging
 
 import pytest
 
+import i2c_helpers as i2c
+
 
 log = logging.getLogger("hil.i2c")
 
@@ -223,3 +225,95 @@ def test_i2c_probe_invalid_bus(board, secrets_name, flashed_board, serial,
     component = protomq.d2b_since(uid, "error.component", mark)
     assert not component, (
         f"expected an error.device, not an error.component: {component}")
+
+
+
+# --- I2C mux --------------------------------------------------------------
+# The board entry's i2c_bus probe may list a mux (the i2c_mux fixture) and
+# the devices on each of its channels. Handle_Probe() only selects a channel
+# on a bus with a mux, which an i2c.Add of the mux puts there.
+
+def _found(probed, address_space):
+    """The sorted addresses probed's one AddressSpaceResult found, which
+    must be for address_space; none if it has no result (a probe that
+    found nothing need not return one)."""
+    results = probed.get("results", [])
+    if not results:
+        return []
+    assert len(results) == 1, (
+        f"expected one AddressSpaceResult, got {len(results)}: {probed}")
+    assert results[0].get("addressSpace") == address_space, (
+        f"expected the AddressSpace sent, {address_space}, got "
+        f"{results[0].get('addressSpace')}: {probed}")
+    return sorted(results[0].get("foundAddresses", []))
+
+
+@pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
+def test_i2c_probe_mux(board, secrets_name, flashed_board, serial, protomq,
+                       checkin, i2c_devices, i2c_address_space, i2c_mux):
+    # --- Arrange ------------------------------------------------------
+    uid = checkin()
+    mark = protomq.d2b_mark(uid)
+    # The bus's devices, the mux among them, answer whichever channel is
+    # selected, so a scan of a channel finds them and its own devices
+    expected = {channel: sorted(set(i2c_devices.addresses) | set(found))
+                for channel, found in i2c_mux.channels.items()}
+
+    # --- Act ----------------------------------------------------------
+    # The whole bus, 0x08-0x77, before the mux is added
+    probed = _probe(serial, protomq, uid, i2c_address_space)
+    bus_found = _found(probed, i2c_address_space)
+    log.info("bus: found %s", _hex(bus_found))
+    assert i2c_mux.address in bus_found, (
+        f"expected the {i2c_mux.type} at 0x{i2c_mux.address:02x} on the "
+        f"bus, found {_hex(bus_found)}")
+    i2c.add_mux(serial, protomq, uid, i2c_address_space, i2c_mux)
+    # Then the whole of each mux channel
+    mapping = {}
+    for channel in i2c_mux.channels:
+        space = i2c.mux_address_space(i2c_address_space, i2c_mux, channel)
+        probed = _probe(serial, protomq, uid, space)
+        mapping[channel] = _found(probed, space)
+        log.info("%s 0x%02x channel %d: found %s", i2c_mux.type,
+                 i2c_mux.address, channel,
+                 _hex(sorted(set(mapping[channel]) - set(bus_found))))
+
+    # --- Assert -------------------------------------------------------
+    # The bus is as the i2c_bus probe lists it...
+    assert bus_found == i2c_devices.addresses, (
+        f"expected the bus to have {_hex(i2c_devices.addresses)}, found "
+        f"{_hex(bus_found)}")
+    # ...each channel has the devices the mux lists on it...
+    wrong = {channel: (_hex(expected[channel]), _hex(found))
+             for channel, found in mapping.items()
+             if found != expected[channel]}
+    assert not wrong, "channels found other than expected, (expected, "\
+        f"found): {wrong}"
+    # ...and the mux raised no error
+    errors = protomq.d2b_since(uid, "error.component", mark)
+    assert not errors, f"expected no error.component: {errors}"
+
+
+@pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
+def test_i2c_probe_mux_not_added(board, secrets_name, flashed_board, serial,
+                                 protomq, checkin, i2c_address_space,
+                                 i2c_mux):
+    # --- Arrange ------------------------------------------------------
+    uid = checkin()
+    space = i2c.mux_address_space(i2c_address_space, i2c_mux)
+
+    # --- Act ----------------------------------------------------------
+    # A mux channel, with no i2c.Add of the mux first
+    _probe(serial, protomq, uid, space, expect_probed=False)
+
+    # --- Assert -------------------------------------------------------
+    # ProbeAddresses() refuses: the bus has no mux, which the DUT reports
+    # as a device error, as a bus belongs to the device
+    error = protomq.expect_d2b_message(uid, "error.device",
+                                       match={"i2cBus": space},
+                                       timeout=CHECKIN_TIMEOUT)
+    assert error.get("i2cBus") == space, (
+        f"expected an error.device for the bus sent, {space}, got {error}")
+    assert error.get("message") == ("AddressSpace specifies MUX but none "
+                                    "on bus!"), f"expected no-mux error: {error}"
+    serial.assert_none(r"^\[i2c\] Probed address space 0", duration=1)

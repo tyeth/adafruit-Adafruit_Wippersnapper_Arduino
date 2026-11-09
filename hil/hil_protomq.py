@@ -328,6 +328,18 @@ class ProtoMQ:
                   if m["seq"] > mark]
         return [v for v in values if v is not None]
 
+    def d2b_timed_since(self, client_id, path, mark):
+        """As d2b_since(), but [(time, value)], time when the broker
+        received the message in seconds since the epoch (None if ProtoMQ
+        doesn't timestamp deliveries)."""
+        timed = []
+        for m in self._messages(client_id, "outbox"):
+            value = get_path(m["payload"], path)
+            if m["seq"] > mark and value is not None:
+                ms = m.get("time")
+                timed.append((None if ms is None else ms / 1000, value))
+        return timed
+
     def assert_no_d2b_message(self, client_id, path, *, match=None, within,
                               interval=0.05):
         """Watch for within seconds that client_id sends no D2B message with

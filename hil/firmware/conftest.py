@@ -542,6 +542,33 @@ def i2c_devices(board):
         pytest.fail(f"board '{board.name}': {e}", pytrace=False)
 
 
+@dataclass(frozen=True)
+class I2cMux:
+    type: str        # the name Handle_Add() takes, e.g. "pca9546"
+    address: int     # on the bus, e.g. 0x70
+    channels: dict   # every channel: sorted addresses, e.g. {0: [0x38], 1: []}
+
+
+@pytest.fixture
+def i2c_mux(board, i2c_devices):
+    """The mux the board entry's i2c_bus probe says is wired to the DUT's
+    I2C port, and the devices on its channels; skips the test if there's
+    none. The mux must also be in the probe's addresses, as it answers on
+    the bus."""
+    config = _probe_config(board, "i2c_bus")
+    try:
+        mux = hil_probe.i2c_bus_mux(config)
+    except hil_probe.ProbeError as e:
+        pytest.fail(f"board '{board.name}': {e}", pytrace=False)
+    if mux is None:
+        pytest.skip(f"board '{board.name}' i2c_bus probe has no 'mux'")
+    mux = I2cMux(*mux)
+    if mux.address not in i2c_devices.addresses:
+        pytest.fail(f"board '{board.name}': i2c_bus probe mux 0x"
+                    f"{mux.address:02x} isn't in its addresses", pytrace=False)
+    return mux
+
+
 @pytest.fixture
 def i2c_address_space(board_definition, i2c_devices):
     """The i2c_bus probe's port as an i2c AddressSpace, as ProtoMQ's JSON

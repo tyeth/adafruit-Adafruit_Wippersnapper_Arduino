@@ -295,6 +295,60 @@ def device(i2c_devices, component_definition, name, address, kind="i2c"):
     return I2cDevice(name, address, component)
 
 
+def mux_device(i2c_mux, component_definition, name, address, kind="i2c"):
+    """The I2cDevice for the sensor whose driver and component are name, at
+    address on the i2c_bus probe's mux, and the channels listing address
+    (one device each: the same address may be on several). Fails unless a
+    channel lists address, and the definition lists it among its
+    i2cAddresses."""
+    channels = [c for c, found in i2c_mux.channels.items() if address in found]
+    if not channels:
+        pytest.fail(f"no i2c_bus probe mux channel lists 0x{address:02x}, "
+                    f"the {name} these tests add", pytrace=False)
+    component = component_definition(kind, name)
+    addresses = [int(a, 16)
+                 for a in component.definition.get("i2cAddresses", [])]
+    if address not in addresses:
+        pytest.fail(f"{component.path} doesn't list 0x{address:02x} in "
+                    "i2cAddresses", pytrace=False)
+    return I2cDevice(name, address, component), channels
+
+
+def mux_address_space(address_space, mux, channel=None):
+    """address_space through mux (on channel, if given), as ProtoMQ's JSON
+    has it: proto3 JSON leaves out channel 0, a zero value."""
+    space = dict(address_space, muxAddress=mux.address)
+    if channel:
+        space["muxChannel"] = channel
+    return space
+
+
+def mux_descriptor(address_space, mux, address=None):
+    """The i2c.Descriptor of mux (at address, if given) on address_space's
+    bus: muxAddress and address are both the mux's."""
+    address = mux.address if address is None else address
+    return {"addressSpace": dict(address_space, muxAddress=address),
+            "address": address}
+
+
+def add_mux(serial, protomq, uid, address_space, mux, already=False):
+    """Send an i2c.Add of mux on address_space's bus, and expect
+    Handle_Add() to initialize it (InitMux() prints no newline on
+    success). Handle_Probe() and Handle_Add() only select a channel on a
+    bus with a mux. With already, expect InitMux() to keep the mux the
+    bus has: its "OK (already initialized)" is on the same line, so it's
+    part of the one match, not a later expect() past that line."""
+    msg = {"descriptor": mux_descriptor(address_space, mux), "name": mux.type}
+    log.info("adding %s at 0x%02x", mux.type, mux.address)
+    protomq.publish(uid, {"i2c": {"add": msg}})
+    protomq.expect_b2d_message(uid, "i2c.add", match=msg, timeout=5)
+    # Unanchored: with no newline, a second Add's line joins the first's
+    pattern = r"\[i2c\] Initializing MUX driver\.\.\."
+    if already:
+        pattern += r"OK \(already initialized\)"
+    serial.expect(pattern, timeout=CHECKIN_TIMEOUT, partial=True)
+
+
 def descriptor(dev, address_space, address=None):
     """dev's i2c.Descriptor on address_space (at address, if given)."""
     return {"addressSpace": address_space,
@@ -365,7 +419,7 @@ def _check_event(dev, address_space, event, types, value_range):
     {type: value}."""
     got_descriptor = event.get("descriptor", {})
     # Exact, not ProtoMQ's partial match: the DUT sends the bus's pins, and
-    # no mux fields for a device on the bus
+    # the mux's address and channel for a device on one, none on the bus
     assert got_descriptor == descriptor(dev, address_space), (
         f"expected descriptor {address_space} at 0x{dev.address:02x}, got "
         f"{got_descriptor}: {event}")
@@ -407,6 +461,37 @@ def expect_event(protomq, uid, dev, address_space, timeout, types,
     received = protomq.last_d2b_time(uid)
     log.info("0x%02x: %s at %s", dev.address, values, received)
     return received, values
+
+
+def full_events_on(protomq, uid, dev, address_space, types, mark, count,
+                   timeout, value_range=None, interval=0.5):
+    """Wait up to timeout for count i2c.Events since mark from dev on
+    address_space, holding every type in types, and check each as
+    expect_event() does. Returns [(time the broker received it, {type:
+    value})], oldest first.
+
+    Matches the whole descriptor, mux channel too, not just the address
+    as collect_full_events() does, so devices at the same address on
+    different mux channels don't mix. Events holding only some types
+    are skipped, as collect_full_events() skips them."""
+    want = descriptor(dev, address_space)
+    deadline = time.monotonic() + timeout
+    while True:
+        events = []
+        for received, event in protomq.d2b_timed_since(uid, "i2c.event",
+                                                        mark):
+            if (event.get("descriptor") != want
+                    or _event_types(event) != dict(types)):
+                continue
+            events.append((received, _check_event(dev, address_space, event,
+                                                  types, value_range)))
+        if len(events) >= count:
+            return events[:count]
+        if time.monotonic() >= deadline:
+            pytest.fail(f"expected {count} full i2c.Events from {dev.name} "
+                        f"on {address_space} within {timeout}s, got "
+                        f"{len(events)}", pytrace=False)
+        time.sleep(interval)
 
 
 def _event_types(event):

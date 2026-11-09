@@ -150,6 +150,67 @@ def i2c_bus_devices(config):
     return port, sorted(parsed)
 
 
+# The I2C muxes an i2c_bus probe's mux may be, as Handle_Add() names them,
+# and their channel counts
+I2C_MUX_CHANNELS = {"pca9546": 4, "pca9548": 8}
+
+
+def _i2c_address(value, what):
+    try:
+        address = int(value, 16)
+    except (TypeError, ValueError):
+        address = None
+    if address is None or not I2C_ADDRESS_MIN <= address <= I2C_ADDRESS_MAX:
+        raise ProbeError(f"{what} must be hex 0x{I2C_ADDRESS_MIN:02x}-"
+                         f"0x{I2C_ADDRESS_MAX:02x}, got {value!r}")
+    return address
+
+
+def i2c_bus_mux(config):
+    """An i2c_bus probe's mux, wired to the DUT's I2C port, and the devices
+    on its channels: (type, address, {channel: sorted addresses}), or None
+    if it has none. Every channel is in the dict, empty if nothing is
+    wired to it, e.g.
+
+        "mux": {"type": "pca9546", "address": "0x70",
+                "channels": {"0": ["0x38"], "2": ["0x10"]}}
+    """
+    mux = config.get("mux")
+    if mux is None:
+        return None
+    if not isinstance(mux, dict):
+        raise ProbeError(f"i2c_bus probe 'mux' must be an object, got {mux!r}")
+    mux_type = mux.get("type")
+    if mux_type not in I2C_MUX_CHANNELS:
+        raise ProbeError(f"i2c_bus probe mux 'type' must be one of "
+                         f"{tuple(I2C_MUX_CHANNELS)}, got {mux_type!r}")
+    address = _i2c_address(mux.get("address"), "i2c_bus probe mux 'address'")
+    count = I2C_MUX_CHANNELS[mux_type]
+    channels = {channel: [] for channel in range(count)}
+    wired = mux.get("channels", {})
+    if not isinstance(wired, dict):
+        raise ProbeError(f"i2c_bus probe mux 'channels' must be an object "
+                         f"like {{\"0\": [\"0x38\"]}}, got {wired!r}")
+    for key, addresses in wired.items():
+        if not (isinstance(key, str) and key.isdigit()
+                and int(key) < count):
+            raise ProbeError(f"i2c_bus probe mux channel must be \"0\"-"
+                             f"\"{count - 1}\" for a {mux_type}, got {key!r}")
+        if not isinstance(addresses, list):
+            raise ProbeError(f"i2c_bus probe mux channel {key} must be a "
+                             f"list like [\"0x38\"], got {addresses!r}")
+        parsed = []
+        for value in addresses:
+            value = _i2c_address(value, f"i2c_bus probe mux channel {key} "
+                                        "address")
+            if value in parsed or value == address:
+                raise ProbeError(f"i2c_bus probe mux channel {key} lists "
+                                 f"0x{value:02x} twice, or the mux's own")
+            parsed.append(value)
+        channels[int(key)] = sorted(parsed)
+    return mux_type, address, channels
+
+
 class Probe:
     def __init__(self, config):
         probe_type = _check_type("digital_gpio", config)

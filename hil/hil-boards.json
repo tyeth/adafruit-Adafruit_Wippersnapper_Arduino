@@ -14,6 +14,7 @@
     "pwm_input": { "type": "pi_gpio", "pin_map": { "D27": "D16" } },
     "analog_input": { "type": "mcp4728_dac", "address": "0x60", "pin_map": { "A34": "A" } },
     "onewire_sensor": { "type": "ds18b20", "pin": "D33" },
-    "i2c_bus": { "type": "i2c_devices", "port": 0, "addresses": ["0x36", "0x3a", "0x40", "0x4a", "0x53", "0x60", "0x6b", "0x77"] }
+    "i2c_bus": { "type": "i2c_devices", "port": 0, "addresses": ["0x36", "0x3a", "0x40", "0x4a", "0x53", "0x60", "0x70", "0x77"],
+                 "mux": { "type": "pca9546", "address": "0x70", "channels": { "0": ["0x10"], "2": ["0x38"], "3": ["0x38"] } } }
   }
 }
