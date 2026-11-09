@@ -272,31 +272,47 @@ def test_i2c_remove_before_add(board, secrets_name, flashed_board, serial,
     i2c.assert_no_events(protomq, uid, within=FIRST_EVENT_TIMEOUT)
 
 
-@pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
-@pytest.mark.parametrize("case", INVALID_ADDS)
-def test_i2c_add_invalid(board, secrets_name, flashed_board, serial, protomq,
-                         checkin, i2c_address_space, api_device, case):
-    # --- Arrange ------------------------------------------------------
-    uid = checkin()
-    changes, message, log_line = INVALID_ADDS[case]
-    add = i2c.add_msg(api_device, i2c_address_space,
-                      api_device.types_at(ONE_TYPE))
-    for field, value in changes.items():
-        if field in ("address", "addressSpace"):
-            add["descriptor"][field] = value
-        else:
-            add[field] = value
-
-    # --- Act ----------------------------------------------------------
+def _check_invalid_add(serial, protomq, uid, add, message, log_line):
+    """Send add, and expect Handle_Add() to reject it with message (after
+    log_line, if given), creating no driver."""
+    since = serial.mark()
     protomq.publish(uid, {"i2c": {"add": add}})
-
-    # --- Assert -------------------------------------------------------
     # Matched on nothing: proto3 JSON leaves out the empty name and zero
-    # address, and it's the only Add sent
+    # address, and the Adds are sent one at a time
     protomq.expect_b2d_message(uid, "i2c.add", timeout=5)
     if log_line:
         serial.expect(log_line, timeout=CHECKIN_TIMEOUT)
     i2c.expect_component_error(protomq, uid, message)
-    serial.assert_none(r"^\[i2c\] Driver initialized: ?$")
-    # A new driver reads at once, so none in this long means none at all
+    serial.assert_none(r"^\[i2c\] Driver initialized: ?$", since=since)
+
+
+@pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
+def test_i2c_add_invalid(board, secrets_name, flashed_board, serial, protomq,
+                         checkin, i2c_address_space, api_device):
+    # --- Arrange ------------------------------------------------------
+    # One checkin for every case: a rejected Add leaves no driver
+    uid = checkin()
+    failures = {}
+
+    # --- Act / Assert, per case --------------------------------------
+    for case, (changes, message, log_line) in INVALID_ADDS.items():
+        add = i2c.add_msg(api_device, i2c_address_space,
+                          api_device.types_at(ONE_TYPE))
+        for field, value in changes.items():
+            if field in ("address", "addressSpace"):
+                add["descriptor"][field] = value
+            else:
+                add[field] = value
+        try:
+            _check_invalid_add(serial, protomq, uid, add, message, log_line)
+            log.info("PASS %s", case)
+        except AssertionError as e:
+            log.error("FAIL %s: %s", case, e)
+            failures[case] = str(e)
+
+    # --- Assert -------------------------------------------------------
+    # A new driver reads at once, so none in this long after the last
+    # Add means none at all, from any case
     i2c.assert_no_events(protomq, uid, within=FIRST_EVENT_TIMEOUT)
+    assert not failures, "\n".join(f"{case}: {why}"
+                                   for case, why in failures.items())

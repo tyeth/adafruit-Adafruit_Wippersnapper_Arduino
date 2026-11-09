@@ -303,22 +303,6 @@ def pytest_collection_modifyitems(config, items):
     items[:] = sorted(selected, key=lambda i: not i.stash.get(SHARED_FLASH, False))
 
 
-def pytest_generate_tests(metafunc):
-    """Parametrize a test's device_address over the board entry's i2c_bus
-    probe addresses, one test per device, e.g. [0x77]."""
-    if "device_address" not in metafunc.fixturenames:
-        return
-    config = metafunc.config
-    probe = load_board_entry(config.getoption("boards"),
-                             config.getoption("board")).get("probes", {}).get("i2c_bus")
-    try:
-        addresses = hil_probe.i2c_bus_devices(probe)[1] if probe else []
-    except hil_probe.ProbeError:
-        addresses = []  # the i2c_devices fixture fails the test with why
-    metafunc.parametrize("device_address", addresses or [None],
-                         ids=[f"0x{a:02x}" for a in addresses] or ["none"])
-
-
 @pytest.fixture(scope="session")
 def board(pytestconfig):
     entry = load_board_entry(pytestconfig.getoption("boards"),
@@ -891,11 +875,20 @@ def device_uid(serial):
 
 
 @pytest.fixture
-def checkin(board, board_definition, serial, power, device_uid, protomq):
+def checkin(request, board, board_definition, serial, power, device_uid,
+            protomq):
     """checkin() resets the DUT and sees it through the checkin to its app
     loop, the broker answering R_OK for its board definition. Returns its
     UID. Call it in the test's Arrange step, after anything that must
-    happen before the reset."""
+    happen before the reset.
+
+    An api test on a board entry with "auto_reset": true (a USB-UART bridge
+    wired to EN, e.g. a CH9102 or CP210x) resets the chip through EN
+    (board_reset()): the port stays enumerated, saving the ~10 s of a
+    power cycle. Every other test power-cycles the hub port (port_reset()),
+    a real power-on reset."""
+    soft_reset = (request.node.stash.get(SHARED_FLASH, False)
+                  and board.entry.get("auto_reset") is True)
     def run():
         # Create the expected checkin.Response based on the board definition
         definition = board_definition.definition
@@ -910,7 +903,12 @@ def checkin(board, board_definition, serial, power, device_uid, protomq):
             "checkin.request", {"checkin": {"response": response}},
             match={"hardwareUid": board_definition.board_id})
 
-        serial.port_reset(board.entry, timeout=15, confirm_off=True, **power)
+        if soft_reset:
+            log.info("resetting %s through EN (auto_reset)", serial.port)
+            serial.board_reset()
+        else:
+            serial.port_reset(board.entry, timeout=15, confirm_off=True,
+                              **power)
 
         # Capture the DUT's UID and tell the broker to track its messages.
         # Not asserting that it isn't on the broker yet: if the DUT

@@ -25,6 +25,7 @@ Exercises:
 """
 
 import logging
+import time
 
 import pytest
 
@@ -124,19 +125,31 @@ def invalid_addresses(i2c_devices):
     return INVALID_ADDRESSES
 
 
+def _report(failures):
+    """Fail listing every case's failure, {case: why}, if any."""
+    assert not failures, "\n".join(f"{case}: {why}"
+                                   for case, why in failures.items())
+
+
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 def test_i2c_probe_present(board, secrets_name, flashed_board, serial,
-                           protomq, checkin, i2c_devices, i2c_address_space,
-                           device_address):
+                           protomq, checkin, i2c_devices, i2c_address_space):
     # --- Arrange ------------------------------------------------------
+    # One checkin for every device: a Probe changes nothing on the DUT
     uid = checkin()
+    failures = {}
 
-    # --- Act ----------------------------------------------------------
-    probed = _probe(serial, protomq, uid, i2c_address_space,
-                    [device_address])
-
-    # --- Assert -------------------------------------------------------
-    _assert_probed(serial, probed, i2c_address_space, [device_address])
+    # --- Act / Assert, per device -----------------------------------
+    for address in i2c_devices.addresses:
+        try:
+            probed = _probe(serial, protomq, uid, i2c_address_space,
+                            [address])
+            _assert_probed(serial, probed, i2c_address_space, [address])
+            log.info("PASS 0x%02x", address)
+        except AssertionError as e:
+            log.error("FAIL 0x%02x: %s", address, e)
+            failures[f"0x{address:02x}"] = str(e)
+    _report(failures)
 
 
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
@@ -186,19 +199,23 @@ def test_i2c_probe_all(board, secrets_name, flashed_board, serial, protomq,
     _assert_probed(serial, probed, i2c_address_space, i2c_devices.addresses)
 
 
-@pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
-@pytest.mark.parametrize("bus", INVALID_BUSES)
-def test_i2c_probe_invalid_bus(board, secrets_name, flashed_board, serial,
-                               protomq, checkin, bus):
-    # --- Arrange ------------------------------------------------------
-    uid = checkin()
-    address_space, log_line = INVALID_BUSES[bus]
+def _expect_probed_since(protomq, uid, mark, timeout=CHECKIN_TIMEOUT):
+    """The first i2c.Probed since mark, sent before or after an error;
+    waits up to timeout for it. Not expect_d2b_message(), whose cursor
+    may still be on an earlier case's Probed."""
+    deadline = time.monotonic() + timeout
+    while True:
+        probed = protomq.d2b_since(uid, "i2c.probed", mark)
+        if probed:
+            return probed[0]
+        assert time.monotonic() < deadline, (
+            f"no i2c.probed within {timeout}s")
+        time.sleep(0.2)
+
+
+def _check_invalid_bus(serial, protomq, uid, address_space, log_line):
     mark = protomq.d2b_mark(uid)
-
-    # --- Act ----------------------------------------------------------
     _probe(serial, protomq, uid, address_space, expect_probed=False)
-
-    # --- Assert -------------------------------------------------------
     # findOrCreateBus() can't create the bus...
     serial.expect(log_line, timeout=5)
     serial.assert_none(r"^\[i2c\] I2C bus initialized successfully!$",
@@ -215,9 +232,7 @@ def test_i2c_probe_invalid_bus(board, secrets_name, flashed_board, serial,
     assert error.get("message"), f"expected an error message: {error}"
     # ...and the Probed, sent before or after the error, whose result
     # found nothing (its AddressSpace may be empty, the error names the bus)
-    earlier = protomq.d2b_since(uid, "i2c.probed", mark)
-    probed = earlier[0] if earlier else protomq.expect_d2b_message(
-        uid, "i2c.probed", timeout=CHECKIN_TIMEOUT)
+    probed = _expect_probed_since(protomq, uid, mark)
     found = [a for r in probed.get("results", [])
              for a in r.get("foundAddresses", [])]
     assert not found, f"expected nothing found, got {_hex(found)}: {probed}"
@@ -226,6 +241,24 @@ def test_i2c_probe_invalid_bus(board, secrets_name, flashed_board, serial,
     assert not component, (
         f"expected an error.device, not an error.component: {component}")
 
+
+@pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
+def test_i2c_probe_invalid_bus(board, secrets_name, flashed_board, serial,
+                               protomq, checkin):
+    # --- Arrange ------------------------------------------------------
+    # One checkin for every bus: none can be created, so none is left
+    uid = checkin()
+    failures = {}
+
+    # --- Act / Assert, per bus ---------------------------------------
+    for bus, (address_space, log_line) in INVALID_BUSES.items():
+        try:
+            _check_invalid_bus(serial, protomq, uid, address_space, log_line)
+            log.info("PASS %s", bus)
+        except AssertionError as e:
+            log.error("FAIL %s: %s", bus, e)
+            failures[bus] = str(e)
+    _report(failures)
 
 
 # --- I2C mux --------------------------------------------------------------
