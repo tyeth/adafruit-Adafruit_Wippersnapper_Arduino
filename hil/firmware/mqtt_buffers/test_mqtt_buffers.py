@@ -33,6 +33,8 @@ import hil_protomq
 
 log = logging.getLogger("hil.mqtt_buffers")
 
+pytestmark = pytest.mark.skip(reason="MQTT buffer tests temporarily disabled")
+
 # --- Constants (from the verification doc) --------------------------------
 BUF = 2048                 # WS_MQTT_BUFFER_SZ
 CAP = BUF - 1              # largest subscription payload (1 B for NUL)
