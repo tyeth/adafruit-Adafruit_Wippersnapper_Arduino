@@ -1131,7 +1131,9 @@ class SerialMonitor:
         With partial, also search the line still waiting for its newline,
         for output the firmware prints without one. A match there moves
         the cursor to just past the match within that line, so the next
-        expect() resumes there, and m.string is the line so far.
+        expect() resumes there, and m.string is the line so far. A match
+        in a complete line does the same, as the line may hold more output
+        after the match.
         """
         __tracebackhide__ = True
         regex = self._compile(pattern)
@@ -1142,8 +1144,15 @@ class SerialMonitor:
                 line, m = self._search(
                     regex, pos, self._cursor_col if pos == self._cursor else 0)
                 if m:
-                    self._cursor = line.index + 1
-                    self._cursor_col = 0
+                    if partial:
+                        # Resume just past the match within the line, as for
+                        # a match in the pending line below: output printed
+                        # without a newline shares its line with what follows
+                        self._cursor = line.index
+                        self._cursor_col = m.end()
+                    else:
+                        self._cursor = line.index + 1
+                        self._cursor_col = 0
                     return m
                 if partial and self._partial:
                     col = (self._cursor_col

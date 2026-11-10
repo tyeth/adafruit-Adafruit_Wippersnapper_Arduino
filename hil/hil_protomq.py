@@ -41,6 +41,26 @@ DEFAULT_MQTT_PORT = 1884
 
 log = logging.getLogger("hil.protomq")
 
+
+def encoded_sizes(messages, directory=None):
+    """The BrokerToDevice-encoded size in bytes of each message (dicts in
+    ProtoMQ's JSON shape, as publish() takes), from ProtoMQ's own
+    protobufjs encoder, so exactly what the broker sends. directory is
+    ProtoMQ's checkout: $HIL_PROTOMQ_DIR, else DEFAULT_DIR."""
+    directory = Path(os.path.expanduser(
+        directory or os.environ.get("HIL_PROTOMQ_DIR", DEFAULT_DIR)))
+    script = (
+        "const {BrokerToDevice} = await import(process.argv[1] + "
+        "'/protobufs.js');"
+        "let s = ''; for await (const c of process.stdin) s += c;"
+        "console.log(JSON.stringify(JSON.parse(s).map(m => BrokerToDevice"
+        ".encode(BrokerToDevice.fromObject(m)).finish().length)));")
+    out = subprocess.run(
+        ["node", "--input-type=module", "-e", script, str(directory)],
+        input=json.dumps(messages), capture_output=True, text=True,
+        check=True, timeout=30)
+    return json.loads(out.stdout)
+
 PR_SET_PDEATHSIG = 1  # <linux/prctl.h>
 
 

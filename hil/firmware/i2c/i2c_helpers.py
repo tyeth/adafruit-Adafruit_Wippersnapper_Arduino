@@ -371,8 +371,10 @@ def add_msg(dev, address_space, types, period=PERIOD, settings=None):
 
 
 def expect_driver_initialized(serial, dev):
-    """Expect Handle_Add() to create and initialize dev's driver."""
-    serial.expect(r"^\[i2c\] Creating sensor driver\.\.\.$",
+    """Expect Handle_Add() to create and initialize dev's driver. Not
+    anchored at the line start: InitMux() prints no newline, so the first
+    sensor after a mux Add shares the mux's line."""
+    serial.expect(r"\[i2c\] Creating sensor driver\.\.\.$",
                   timeout=CHECKIN_TIMEOUT)
     serial.expect(r"^\[i2c\] Driver initialized: ?$", timeout=5)
     serial.expect(rf"^{dev.name}$", timeout=5)

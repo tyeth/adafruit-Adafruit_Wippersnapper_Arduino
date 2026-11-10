@@ -1,1 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="0" skipped="0" tests="1" time="74.322" timestamp="2026-11-09T13:05:02.385414-05:00" hostname="wshil"><testcase classname="firmware.i2c.test_i2c_mux" name="test_i2c_mux_and_bus_sensors[good]" time="65.181" /><testcase time="1.034" /></testsuite></testsuites>

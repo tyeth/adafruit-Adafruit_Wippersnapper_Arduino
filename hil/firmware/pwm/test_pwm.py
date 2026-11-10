@@ -32,7 +32,7 @@ ERROR_WINDOW = 3
 # Number of PWM periods the pulse probe measures the duty over.
 DUTY_PERIODS = 100
 # Maximum acceptable error for the pulse probe's measured duty.
-PROBE_DUTY_ERROR = 0.003
+PROBE_DUTY_ERROR = 0.006  # Pi GPIO probe jitter at 5 kHz: seen up to +/-0.53%
 # Period tolerance for the pulse probe's measured period.
 PERIOD_TOLERANCE = 0.005
 # Duty cycles to scan during tests, as fractions of full scale.

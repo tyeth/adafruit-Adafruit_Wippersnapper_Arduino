@@ -886,10 +886,17 @@ def checkin(request, board, board_definition, serial, power, device_uid,
     wired to EN, e.g. a CH9102 or CP210x) resets the chip through EN
     (board_reset()): the port stays enumerated, saving the ~10 s of a
     power cycle. Every other test power-cycles the hub port (port_reset()),
-    a real power-on reset."""
+    a real power-on reset.
+
+    checkin(component_adds, expect_adds) also puts component_adds (a
+    checkin.ComponentAdds, as ProtoMQ's JSON has it, e.g.
+    {"digitalAdds": [...]}) in the response, and calls expect_adds() once
+    the broker has sent it, before expecting the checkin to complete:
+    the DUT applies the adds while it decodes the response, so
+    expect_adds() checks the add logs in order on serial."""
     soft_reset = (request.node.stash.get(SHARED_FLASH, False)
                   and board.entry.get("auto_reset") is True)
-    def run():
+    def run(component_adds=None, expect_adds=None):
         # Create the expected checkin.Response based on the board definition
         definition = board_definition.definition
         response = {
@@ -898,6 +905,8 @@ def checkin(request, board, board_definition, serial, power, device_uid,
             "totalAnalogPins": len(definition["components"]["analogPins"]),
             "referenceVoltage": definition["mcuRefVoltage"],
         }
+        if component_adds is not None:
+            response["componentAdds"] = component_adds
         protomq.enable_checkin_fallback(False)
         protomq.set_autorespond(
             "checkin.request", {"checkin": {"response": response}},
@@ -933,6 +942,8 @@ def checkin(request, board, board_definition, serial, power, device_uid,
             timeout=CHECKIN_TIMEOUT)
         protomq.expect_b2d_message(uid, "checkin.response",
                                    match=response, timeout=5)
+        if expect_adds is not None:
+            expect_adds()
         protomq.expect_d2b_message(uid, "checkin.complete",
                                    timeout=CHECKIN_TIMEOUT)
         serial.expect(r"^Completed checkin process!$",
