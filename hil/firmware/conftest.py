@@ -82,6 +82,8 @@ system_tests reprovision and reflash the board, so they're much slower:
     "skip_tests": []                  # these are reported as skipped
 
 --suite api or --suite system runs only that suite; without it both run.
+Tests marked slow (minutes each, e.g. the sleep soak tests) are skipped
+unless --run-slow.
 Omit both lists to run every test. Tests outside the selected lists are
 deselected. Selection on the command line (paths, -k) narrows this
 further; it can't widen it.
@@ -180,12 +182,14 @@ def pytest_addoption(parser):
     group.addoption("--suite", choices=SUITES,
                     help="run only the board entry's api_tests or system_tests "
                          "(default: both)")
+    group.addoption("--run-slow", action="store_true",
+                    help="also run tests marked slow (default: skip them)")
 
 
 def pytest_configure(config):
     config.addinivalue_line(
         "markers", "slow: takes minutes, e.g. waits for the WDT to reboot "
-                   "the board (deselect with -m \"not slow\")")
+                   "the board; skipped unless --run-slow")
 
 
 def _log_stem(request):
@@ -271,7 +275,8 @@ def _run_selectors(entry, suite):
 
 def pytest_collection_modifyitems(config, items):
     """Apply the board entry's api_tests/system_tests (per --suite) and
-    skip_tests to the tests under FIRMWARE_DIR."""
+    skip_tests to the tests under FIRMWARE_DIR, and skip the tests marked
+    slow unless --run-slow."""
     try:
         entry = load_board_entry(config.getoption("boards"),
                                  config.getoption("board"))
@@ -280,6 +285,7 @@ def pytest_collection_modifyitems(config, items):
     run = _run_selectors(entry, config.getoption("suite"))
     api = _test_selectors(entry, "api_tests") or []
     skip = _test_selectors(entry, "skip_tests")
+    run_slow = config.getoption("run_slow")
     selected, deselected = [], []
     for item in items:
         path = Path(item.path)
@@ -296,6 +302,9 @@ def pytest_collection_modifyitems(config, items):
         if skip and _matches(test_id, skip):
             item.add_marker(pytest.mark.skip(
                 reason=f"in skip_tests for board '{entry['board']}'"))
+        elif not run_slow and item.get_closest_marker("slow"):
+            item.add_marker(pytest.mark.skip(
+                reason="slow: run with --run-slow"))
         selected.append(item)
     if deselected:
         config.hook.pytest_deselected(items=deselected)
