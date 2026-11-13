@@ -902,10 +902,14 @@ def checkin(request, board, board_definition, serial, power, device_uid,
     {"digitalAdds": [...]}) in the response, and calls expect_adds() once
     the broker has sent it, before expecting the checkin to complete:
     the DUT applies the adds while it decodes the response, so
-    expect_adds() checks the add logs in order on serial."""
+    expect_adds() checks the add logs in order on serial.
+
+    checkin(..., **response_fields) also puts response_fields (ProtoMQ's
+    JSON names, e.g. sleepEnabled=True, sleepConfig={...}) in the
+    response. The broker keeps answering every later checkin with it."""
     soft_reset = (request.node.stash.get(SHARED_FLASH, False)
                   and board.entry.get("auto_reset") is True)
-    def run(component_adds=None, expect_adds=None):
+    def run(component_adds=None, expect_adds=None, **response_fields):
         # Create the expected checkin.Response based on the board definition
         definition = board_definition.definition
         response = {
@@ -916,6 +920,7 @@ def checkin(request, board, board_definition, serial, power, device_uid,
         }
         if component_adds is not None:
             response["componentAdds"] = component_adds
+        response.update(response_fields)
         protomq.enable_checkin_fallback(False)
         protomq.set_autorespond(
             "checkin.request", {"checkin": {"response": response}},
