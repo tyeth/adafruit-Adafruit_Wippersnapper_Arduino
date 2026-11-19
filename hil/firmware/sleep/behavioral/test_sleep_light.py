@@ -270,8 +270,8 @@ def run_i2c_sleep(board, serial, protomq, checkin, board_definition, probe,
     enables light sleep, waking on the timer (variant None) or ext0. The
     boot publishes one reading per sensor, then sleeps. Each wake resumes
     where it slept: its checkin's response is the boot's, unchanged, so
-    skipped: nothing re-added, ext0 not re-armed. The sensors, powered
-    off over the sleep with the board's other external components, still
+    skipped: nothing re-added, ext0 not re-armed. The sensors, kept
+    powered over a light sleep (the I2C rail is only cut for deep sleep),
     publish one reading each, within I2C_PERIOD of the checkin and before
     the goodnight, and the DUT sleeps again."""
     # --- Arrange ------------------------------------------------------
@@ -366,20 +366,6 @@ def run_i2c_sleep(board, serial, protomq, checkin, board_definition, probe,
     assert not misses, "\n".join(misses)
 
 
-# Known firmware bug (#1123): SleepHardware::ReenableExternalComponents()
-# writes NEOPIXEL_I2C_POWER LOW on wake, as DisableExternalComponents()
-# does before sleep, so a light wake leaves STEMMA QT power off: every
-# sensor read fails, the I2C controller never completes, and loopSleep()
-# (no run-duration deadline for a broker SleepConfig) never says goodnight.
-# Even powered again, the skipped wake checkin doesn't re-initialize the
-# drivers. strict: an XPASS fails the run, flagging the fix.
-I2C_POWER_XFAIL = pytest.mark.xfail(strict=True, reason=(
-    "firmware: a light wake leaves NEOPIXEL_I2C_POWER (STEMMA QT) off and "
-    "doesn't re-initialize the I2C drivers, so every read fails and the "
-    "DUT never sleeps again"))
-
-
-@I2C_POWER_XFAIL
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 def test_sleep_light_timer_i2c(board, secrets_name, flashed_board, serial,
                                protomq, checkin, board_definition,
@@ -394,7 +380,6 @@ def test_sleep_light_timer_i2c(board, secrets_name, flashed_board, serial,
                   sensors, None)
 
 
-@I2C_POWER_XFAIL
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 def test_sleep_light_ext0_i2c(board, secrets_name, flashed_board, serial,
                               protomq, checkin, board_definition, probe,
