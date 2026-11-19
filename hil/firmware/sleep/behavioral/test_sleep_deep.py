@@ -8,22 +8,16 @@ A deep sleep wake is a reset into a fresh boot: the DUT checks in again,
 and the broker's response re-adds its components and re-enables sleep.
 """
 
-import re
-
 import pytest
 
 import sleep_helpers as sh
 from sleep_helpers import (CHECKIN_TIMEOUT, DISCONNECT_TIMEOUT, HOLD_S,
                            SLEEP_TOLERANCE_S, TIMER_S, WAKE_TIMEOUT, log)
 
-# ws_sleep_SleepMode_S_DEEP, as the wake's "Prv. Sleep Mode" line prints it
-S_DEEP = 2
-# The boot ROM's reset line on a deep sleep wake, the first line the DUT
-# prints when it wakes: "rst:0x5 (DEEPSLEEP_RESET),boot:..." on an ESP32,
-# "rst:0x5 (DSLEEP),boot:..." on the S2/S3/C3
-DEEP_SLEEP_RESET_RE = r"^rst:0x5 \((DEEPSLEEP_RESET|DSLEEP)\)"
-# The wake's first boot lines, ending a sleep watch
-WAKE_RE = re.compile(DEEP_SLEEP_RESET_RE + r"|^ESP Reset Reason: ")
+# Wake and reset lines (see sleep_helpers)
+S_DEEP = sh.S_DEEP
+DEEP_SLEEP_RESET_RE = sh.DEEP_SLEEP_RESET_RE
+WAKE_RE = sh.DEEP_WAKE_RE
 # The wake's checkin: the timer, then a boot, WiFi and the broker
 WAKE_CHECKIN_TIMEOUT = TIMER_S + SLEEP_TOLERANCE_S + 150
 

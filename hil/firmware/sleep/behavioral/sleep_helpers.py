@@ -35,6 +35,33 @@ CHECKIN_TIMEOUT = 30
 WAKE_TIMEOUT = TIMER_S + SLEEP_TOLERANCE_S + 15
 
 
+# --- Wake and reset lines -------------------------------------------------
+
+# ws_sleep_SleepMode_S_DEEP, as a deep wake's "Prv. Sleep Mode" line prints
+S_DEEP = 2
+# The boot ROM's reset line on a deep sleep wake, the first line the DUT
+# prints when it wakes: "rst:0x5 (DEEPSLEEP_RESET),boot:..." on an ESP32,
+# "rst:0x5 (DSLEEP),boot:..." on the S2/S3/C3
+DEEP_SLEEP_RESET_RE = r"^rst:0x5 \((DEEPSLEEP_RESET|DSLEEP)\)"
+# A deep sleep wake's first boot lines, ending a sleep watch
+DEEP_WAKE_RE = re.compile(DEEP_SLEEP_RESET_RE + r"|^ESP Reset Reason: ")
+# WakeFromLightSleep()'s first line, once it has restarted Serial. The
+# line before it, "*** WOKE FROM LIGHT SLEEP ***", prints while Serial is
+# still ended, so it doesn't reach the host. StartSleep()'s Serial.end()
+# puts a NUL on the line as the DUT sleeps, which starts this line on the
+# host: it reads "\0[sleep] Woke up...", stamped with the NUL's arrival,
+# when the DUT went to sleep, not when it woke.
+LIGHT_WAKE_RE = re.compile(r"^\x00?\[sleep\] Woke up from light sleep!$")
+# The first line after the light wake line, whose first byte is sent after
+# the wake: its arrival times the wake (Serial.begin() and a few ms late)
+WOKE_TIME_RE = r"^Slept for (\d+) seconds$"
+# A reset: the boot ROM's reset line, or the firmware's boot info. A light
+# sleep wake resumes where it slept, so it prints neither.
+RESET_RE = re.compile(r"^rst:0x|^ESP Reset Reason: ")
+# Any light wake or reset, ending a sleep watch
+LIGHT_WAKE_OR_RESET_RE = re.compile(LIGHT_WAKE_RE.pattern + "|" +
+                                    RESET_RE.pattern)
+
 def checkin_response(board_definition, **extra):
     """The R_OK checkin.Response the checkin fixture sends for
     board_definition, with extra fields (ProtoMQ JSON names)."""

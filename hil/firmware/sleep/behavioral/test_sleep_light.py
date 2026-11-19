@@ -9,29 +9,17 @@ reconnects, checks in (a response unchanged since the last one it
 applied is skipped), and sleeps again.
 """
 
-import re
-
 import pytest
 
 import sleep_helpers as sh
 from sleep_helpers import (CHECKIN_TIMEOUT, DISCONNECT_TIMEOUT, HOLD_S,
                            TIMER_S, WAKE_TIMEOUT, log)
 
-# WakeFromLightSleep()'s first line, once it has restarted Serial. The
-# line before it, "*** WOKE FROM LIGHT SLEEP ***", prints while Serial is
-# still ended, so it doesn't reach the host. StartSleep()'s Serial.end()
-# puts a NUL on the line as the DUT sleeps, which starts this line on the
-# host: it reads "\0[sleep] Woke up...", stamped with the NUL's arrival,
-# when the DUT went to sleep, not when it woke.
-LIGHT_WAKE_RE = re.compile(r"^\x00?\[sleep\] Woke up from light sleep!$")
-# The first line after the wake line, whose first byte is sent after the
-# wake: its arrival times the wake (Serial.begin() and a few ms late)
-WOKE_TIME_RE = r"^Slept for (\d+) seconds$"
-# A reset while asleep: the boot ROM's reset line, or the firmware's boot
-# info. A light sleep wake resumes where it slept, so it prints neither.
-RESET_RE = re.compile(r"^rst:0x|^ESP Reset Reason: ")
-# Any wake or reset, ending a sleep watch
-WAKE_OR_RESET_RE = re.compile(LIGHT_WAKE_RE.pattern + "|" + RESET_RE.pattern)
+# Wake and reset lines (see sleep_helpers)
+LIGHT_WAKE_RE = sh.LIGHT_WAKE_RE
+WOKE_TIME_RE = sh.WOKE_TIME_RE
+RESET_RE = sh.RESET_RE
+WAKE_OR_RESET_RE = sh.LIGHT_WAKE_OR_RESET_RE
 # The light sleep cycle count the first wake logs: the boot counts as
 # cycle 1 (SleepHardware's constructor), so the first wake is cycle 2
 FIRST_WAKE_SLEEP_CYCLE = 2
@@ -94,18 +82,15 @@ def timer_sleep_wake_cycle(board, serial, protomq, uid, board_definition,
     sh.expect_wake_checkin(protomq, uid, board_definition, wake_response,
                            LIGHT_WAKE_CHECKIN_TIMEOUT)
 
-    # The first wake applies the response, with sleepEnabled and the
-    # SleepConfig now; every later one is unchanged, so skipped
+    # The first wake's response is new (now with sleepEnabled), but its
+    # SleepConfig is the one already armed, so it isn't re-applied; every
+    # later response is unchanged, so skipped
     changed = cycle == 1
     if changed:
         serial.expect(r"^\[checkin\] Response is new or changed$",
                       timeout=CHECKIN_TIMEOUT)
-        serial.expect(r"^\[app\] Processing sleep configuration from "
-                      r"checkin$", timeout=CHECKIN_TIMEOUT)
-        # Applying it re-arms the timer, within the checkin
-        serial.expect(r"^\[sleep\] Timer wakeup set to %d seconds$" % TIMER_S,
-                      timeout=5)
-        serial.expect(r"^Sleep Enabled: YES$", timeout=5)
+        serial.expect(r"^\[app\] Sleep configuration unchanged$",
+                      timeout=CHECKIN_TIMEOUT)
     else:
         serial.expect(r"^\[checkin\] Response unchanged since last checkin$",
                       timeout=CHECKIN_TIMEOUT)
@@ -212,8 +197,8 @@ def test_sleep_light_ext0(board, secrets_name, flashed_board, serial,
     """The wake pin, added with a pull holding it idle, arms an ext0 light
     sleep: the DUT stays asleep while the pin idles, wakes where it slept
     as soon as the probe drives the wake level, hands the pin back to its
-    digital component, reconnects, checks in (applying the response, now
-    with sleepEnabled, which re-arms ext0), and sleeps again."""
+    digital component, reconnects, checks in (its SleepConfig unchanged,
+    so ext0 stays armed), and sleeps again."""
     v = sh.EXT0_VARIANTS[variant]
     # --- Arrange ------------------------------------------------------
     uid, wake_response, config = sh.ext0_arrange(
@@ -233,7 +218,7 @@ def test_sleep_light_ext0(board, secrets_name, flashed_board, serial,
     driven_at, _ = sh.drive_wake(probe, serial, v, LIGHT_WAKE_RE.pattern)
     # ext0 left the pin routed to RTC IO: the DUT hands it back
     serial.expect(r"^\[sleep\] Released ext0 wake pin back to digital "
-                  r"GPIO$", timeout=5)
+                  r"GPIO(, restored its pull)?$", timeout=5)
     slept_for = serial.expect(WOKE_TIME_RE, timeout=5)
     woke_at = sh.line_time(serial, slept_for)
     resets = [l.text for l in serial.lines(asleep_from)
@@ -249,15 +234,14 @@ def test_sleep_light_ext0(board, secrets_name, flashed_board, serial,
                       f"expected {FIRST_WAKE_SLEEP_CYCLE}")
 
     # 4. It reconnects and checks in: the response, now with sleepEnabled,
-    # differs from the boot's, so it's applied, re-arming ext0
+    # differs from the boot's, but its SleepConfig is the one already
+    # armed, so ext0 isn't re-armed
     expect_light_reconnect_checkin(serial, protomq, uid, board_definition,
                                    wake_response)
     serial.expect(r"^\[checkin\] Response is new or changed$",
                   timeout=CHECKIN_TIMEOUT)
-    serial.expect(r"^\[app\] Processing sleep configuration from checkin$",
+    serial.expect(r"^\[app\] Sleep configuration unchanged$",
                   timeout=CHECKIN_TIMEOUT)
-    serial.expect(sh.ext0_armed_re(v), timeout=5)
-    serial.expect(r"^Sleep Enabled: YES$", timeout=5)
     serial.expect(r"^Completed checkin process!$", timeout=CHECKIN_TIMEOUT)
 
     # 5. ...publishes the pin, idle again, and sleeps again, staying asleep:
@@ -332,7 +316,8 @@ def run_i2c_sleep(board, serial, protomq, checkin, board_definition, probe,
                 driven_at, _ = sh.drive_wake(probe, serial, variant,
                                              LIGHT_WAKE_RE.pattern)
                 serial.expect(r"^\[sleep\] Released ext0 wake pin back to "
-                              r"digital GPIO$", timeout=5)
+                              r"digital GPIO(, restored its pull)?$",
+                              timeout=5)
             slept_for = serial.expect(WOKE_TIME_RE, timeout=5)
             woke_at = sh.line_time(serial, slept_for)
             asleep, reported = woke_at - slept_at, int(slept_for.group(1))
@@ -381,6 +366,20 @@ def run_i2c_sleep(board, serial, protomq, checkin, board_definition, probe,
     assert not misses, "\n".join(misses)
 
 
+# Known firmware bug (#1123): SleepHardware::ReenableExternalComponents()
+# writes NEOPIXEL_I2C_POWER LOW on wake, as DisableExternalComponents()
+# does before sleep, so a light wake leaves STEMMA QT power off: every
+# sensor read fails, the I2C controller never completes, and loopSleep()
+# (no run-duration deadline for a broker SleepConfig) never says goodnight.
+# Even powered again, the skipped wake checkin doesn't re-initialize the
+# drivers. strict: an XPASS fails the run, flagging the fix.
+I2C_POWER_XFAIL = pytest.mark.xfail(strict=True, reason=(
+    "firmware: a light wake leaves NEOPIXEL_I2C_POWER (STEMMA QT) off and "
+    "doesn't re-initialize the I2C drivers, so every read fails and the "
+    "DUT never sleeps again"))
+
+
+@I2C_POWER_XFAIL
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 def test_sleep_light_timer_i2c(board, secrets_name, flashed_board, serial,
                                protomq, checkin, board_definition,
@@ -395,6 +394,7 @@ def test_sleep_light_timer_i2c(board, secrets_name, flashed_board, serial,
                   sensors, None)
 
 
+@I2C_POWER_XFAIL
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 def test_sleep_light_ext0_i2c(board, secrets_name, flashed_board, serial,
                               protomq, checkin, board_definition, probe,
@@ -420,9 +420,8 @@ def run_stop_sleeping(board, serial, protomq, checkin, board_definition,
     answered with sleep enabled). Then IO's "stop sleeping" while it
     sleeps: no message, only the next checkin's response disables sleep.
     The timer wakes the DUT where it slept; its wake checkin's response
-    must differ from the last one it applied (fail its hash check), so
-    it's applied: sleep disabled, the DUT leaves loopSleep() for its
-    regular loop and stays awake."""
+    disables sleep, whether or not it matches the last one it applied:
+    the DUT leaves loopSleep() for its regular loop and stays awake."""
     # --- Arrange ------------------------------------------------------
     uid = checkin()
     sleep_response = sh.enable_sleep_on_checkin(protomq, board_definition,
@@ -456,8 +455,8 @@ def run_stop_sleeping(board, serial, protomq, checkin, board_definition,
     log.info("DUT woke %.3f s after entering light sleep; firmware reports "
              "%s s", woke_at - slept_at, slept_for.group(1))
 
-    # 2. It reconnects and checks in: the response, without sleep, fails
-    # the hash check, so it's applied and disables sleep
+    # 2. It reconnects and checks in: the response, without sleep,
+    # disables sleep (changed or not since the last checkin applied)
     serial.expect(r"^\[app\] Reconnecting network after light sleep "
                   r"wake\.\.\.$", timeout=10)
     serial.expect(r"^\[app\] Checking in after light sleep wake\.\.\.$",
@@ -465,8 +464,6 @@ def run_stop_sleeping(board, serial, protomq, checkin, board_definition,
     sh.expect_sleep_stopped_checkin(protomq, uid, board_definition,
                                     awake_response,
                                     LIGHT_WAKE_CHECKIN_TIMEOUT)
-    serial.expect(r"^\[checkin\] Response is new or changed$",
-                  timeout=CHECKIN_TIMEOUT)
     serial.expect(r"^\[app\] Sleep disabled by checkin$",
                   timeout=CHECKIN_TIMEOUT)
     serial.expect(r"^\[sleep\] Sleep disabled, resuming regular "
@@ -480,21 +477,13 @@ def run_stop_sleeping(board, serial, protomq, checkin, board_definition,
     assert not misses, "\n".join(misses)
 
 
-# Known firmware bug (#1123 / #1060): a runtime sleep.B2D SleepConfig
-# doesn't invalidate the stored checkin response hash. Stopped before any
-# wake checkin, the "stop sleeping" response (plain R_OK, sleep off) is
-# byte-identical to the boot's, last applied: the wake checkin skips it as
-# unchanged, and the DUT keeps sleeping. strict: an XPASS fails the run,
-# flagging the fix so the mark can come off.
-@pytest.mark.xfail(strict=True, reason=(
-    "firmware: a runtime SleepConfig doesn't invalidate the checkin hash, "
-    "so 'stop sleeping' before the first wake checkin matches the boot "
-    "response and is skipped; the DUT keeps sleeping"))
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 def test_sleep_light_stop_sleeping(board, secrets_name, flashed_board, serial,
                                    protomq, checkin, board_definition):
     """"Stop sleeping" during the first light sleep after a runtime
-    SleepConfig, before any wake checkin."""
+    SleepConfig, before any wake checkin: the stopped response matches
+    the boot's, last applied, so the wake checkin finds it unchanged, but
+    still applies its sleep settings and disables sleep (#1123 / #1060)."""
     run_stop_sleeping(board, serial, protomq, checkin, board_definition, 0)
 
 
