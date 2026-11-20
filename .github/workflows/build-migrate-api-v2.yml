@@ -321,6 +321,9 @@ jobs:
           source .github/scripts/retry.sh
           clone_retry --quiet https://github.com/pstolarz/Arduino-Temperature-Control-Library.git /home/runner/Arduino/libraries/Arduino-Temperature-Control-Library
           clone_retry --quiet https://github.com/pstolarz/OneWireNg.git /home/runner/Arduino/libraries/OneWireNg
+          # UAT: Library Manager stops at SPIFlash 5.1.1 (5.1.2 rejected for symlinks); 5.1.2 has the IDF 6 esp_flash_t fix
+          clone_retry --quiet --depth 1 -b 5.1.2 https://github.com/adafruit/Adafruit_SPIFlash.git /home/runner/Arduino/libraries/Adafruit_SPIFlash
+          echo "UAT libs: SPIFlash $(grep ^version= /home/runner/Arduino/libraries/Adafruit_SPIFlash/library.properties), OneWireNg $(git -C /home/runner/Arduino/libraries/OneWireNg rev-parse --short HEAD)"
           clone_retry --quiet https://github.com/adafruit/Adafruit_HX8357_Library.git /home/runner/Arduino/libraries/Adafruit_HX8357_Library
           clone_retry --quiet https://github.com/adafruit/Adafruit_ILI9341.git /home/runner/Arduino/libraries/Adafruit_ILI9341
           clone_retry --quiet https://github.com/adafruit/Adafruit_STMPE610.git /home/runner/Arduino/libraries/Adafruit_STMPE610
@@ -585,6 +588,9 @@ jobs:
           source .github/scripts/retry.sh
           clone_retry --quiet https://github.com/pstolarz/Arduino-Temperature-Control-Library.git /home/runner/Arduino/libraries/Arduino-Temperature-Control-Library
           clone_retry --quiet https://github.com/pstolarz/OneWireNg.git /home/runner/Arduino/libraries/OneWireNg
+          # UAT: Library Manager stops at SPIFlash 5.1.1 (5.1.2 rejected for symlinks); 5.1.2 has the IDF 6 esp_flash_t fix
+          clone_retry --quiet --depth 1 -b 5.1.2 https://github.com/adafruit/Adafruit_SPIFlash.git /home/runner/Arduino/libraries/Adafruit_SPIFlash
+          echo "UAT libs: SPIFlash $(grep ^version= /home/runner/Arduino/libraries/Adafruit_SPIFlash/library.properties), OneWireNg $(git -C /home/runner/Arduino/libraries/OneWireNg rev-parse --short HEAD)"
           clone_retry --quiet https://github.com/adafruit/Adafruit_HX8357_Library.git /home/runner/Arduino/libraries/Adafruit_HX8357_Library
           clone_retry --quiet https://github.com/adafruit/Adafruit_ILI9341.git /home/runner/Arduino/libraries/Adafruit_ILI9341
           clone_retry --quiet https://github.com/adafruit/Adafruit_STMPE610.git /home/runner/Arduino/libraries/Adafruit_STMPE610
@@ -751,6 +757,9 @@ jobs:
           source .github/scripts/retry.sh
           clone_retry --quiet https://github.com/pstolarz/Arduino-Temperature-Control-Library.git /home/runner/Arduino/libraries/Arduino-Temperature-Control-Library
           clone_retry --quiet https://github.com/pstolarz/OneWireNg.git /home/runner/Arduino/libraries/OneWireNg
+          # UAT: Library Manager stops at SPIFlash 5.1.1 (5.1.2 rejected for symlinks); 5.1.2 has the IDF 6 esp_flash_t fix
+          clone_retry --quiet --depth 1 -b 5.1.2 https://github.com/adafruit/Adafruit_SPIFlash.git /home/runner/Arduino/libraries/Adafruit_SPIFlash
+          echo "UAT libs: SPIFlash $(grep ^version= /home/runner/Arduino/libraries/Adafruit_SPIFlash/library.properties), OneWireNg $(git -C /home/runner/Arduino/libraries/OneWireNg rev-parse --short HEAD)"
       - name: Restore cached nanopb
         id: cache-nanopb-restore
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
@@ -1303,6 +1312,9 @@ jobs:
           source .github/scripts/retry.sh
           clone_retry --quiet https://github.com/pstolarz/Arduino-Temperature-Control-Library.git /home/runner/Arduino/libraries/Arduino-Temperature-Control-Library
           clone_retry --quiet https://github.com/pstolarz/OneWireNg.git /home/runner/Arduino/libraries/OneWireNg
+          # UAT: Library Manager stops at SPIFlash 5.1.1 (5.1.2 rejected for symlinks); 5.1.2 has the IDF 6 esp_flash_t fix
+          clone_retry --quiet --depth 1 -b 5.1.2 https://github.com/adafruit/Adafruit_SPIFlash.git /home/runner/Arduino/libraries/Adafruit_SPIFlash
+          echo "UAT libs: SPIFlash $(grep ^version= /home/runner/Arduino/libraries/Adafruit_SPIFlash/library.properties), OneWireNg $(git -C /home/runner/Arduino/libraries/OneWireNg rev-parse --short HEAD)"
           clone_retry --quiet https://github.com/adafruit/Adafruit_HX8357_Library.git /home/runner/Arduino/libraries/Adafruit_HX8357_Library
           clone_retry --quiet https://github.com/adafruit/Adafruit_ILI9341.git /home/runner/Arduino/libraries/Adafruit_ILI9341
           clone_retry --quiet https://github.com/adafruit/Adafruit_STMPE610.git /home/runner/Arduino/libraries/Adafruit_STMPE610
@@ -1460,6 +1472,9 @@ jobs:
           source .github/scripts/retry.sh
           clone_retry --quiet https://github.com/pstolarz/Arduino-Temperature-Control-Library.git /home/runner/Arduino/libraries/Arduino-Temperature-Control-Library
           clone_retry --quiet https://github.com/pstolarz/OneWireNg.git /home/runner/Arduino/libraries/OneWireNg
+          # UAT: Library Manager stops at SPIFlash 5.1.1 (5.1.2 rejected for symlinks); 5.1.2 has the IDF 6 esp_flash_t fix
+          clone_retry --quiet --depth 1 -b 5.1.2 https://github.com/adafruit/Adafruit_SPIFlash.git /home/runner/Arduino/libraries/Adafruit_SPIFlash
+          echo "UAT libs: SPIFlash $(grep ^version= /home/runner/Arduino/libraries/Adafruit_SPIFlash/library.properties), OneWireNg $(git -C /home/runner/Arduino/libraries/OneWireNg rev-parse --short HEAD)"
       - name: Restore cached nanopb
         id: cache-nanopb-restore
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
