@@ -14,7 +14,13 @@
  */
 #include "model.h"
 #if defined(ARDUINO_ARCH_ESP32)
+#include <esp_arduino_version.h>
+#if ESP_ARDUINO_VERSION_MAJOR >= 4
+// ESP-IDF 6 ships mbedTLS 4, which drops the legacy mbedtls/sha256.h API
+#include <SHA2Builder.h>
+#else
 #include "mbedtls/sha256.h"
+#endif
 #elif defined(ARDUINO_ARCH_RP2350)
 #include <bearssl/bearssl_hash.h>
 #endif
@@ -38,7 +44,14 @@ static std::vector<CheckinComponent> checkin_components;
     @returns True if hashed, False if hashing is unsupported or failed.
 */
 static bool sha256(const uint8_t *data, size_t len, uint8_t *out) {
-#if defined(ARDUINO_ARCH_ESP32)
+#if defined(ARDUINO_ARCH_ESP32) && ESP_ARDUINO_VERSION_MAJOR >= 4
+  SHA2Builder sha(SHA2_256_HASH_SIZE);
+  sha.begin();
+  sha.add(data, len);
+  sha.calculate();
+  sha.getBytes(out);
+  return true;
+#elif defined(ARDUINO_ARCH_ESP32)
   return mbedtls_sha256(data, len, out, 0) == 0;
 #elif defined(ARDUINO_ARCH_RP2350)
   br_sha256_context ctx;
