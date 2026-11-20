@@ -14,6 +14,37 @@ f="$LIBS/GFX_Library_for_Arduino/src/databus/Arduino_ESP32LCD8.cpp"
 sed -i -E 's/(\.(dc|wr|cs)_gpio_num = )(_[a-z0-9]+)/\1(gpio_num_t)\3/; s/\{_d0, _d1, _d2, _d3, _d4, _d5, _d6, _d7\}/{(gpio_num_t)_d0, (gpio_num_t)_d1, (gpio_num_t)_d2, (gpio_num_t)_d3, (gpio_num_t)_d4, (gpio_num_t)_d5, (gpio_num_t)_d6, (gpio_num_t)_d7}/' "$f"
 echo "UAT patch: Arduino_GFX ESP32LCD8 gpio_num_t casts: $(grep -c '(gpio_num_t)_' "$f") sites"
 
+# Arduino_GFX ESP32SPI: ESP-IDF 6 dropped PERIPH_SPI2/3_MODULE and the
+# periph_ll_* calls the S3 path uses; use the spi_ll bus clock/reset instead
+python3 - "$LIBS/GFX_Library_for_Arduino/src/databus/Arduino_ESP32SPI.cpp" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = """#elif CONFIG_IDF_TARGET_ESP32S3
+  if (_spi_num == FSPI)
+  {
+    periph_ll_reset(PERIPH_SPI2_MODULE);"""
+new = """#elif CONFIG_IDF_TARGET_ESP32S3 && ESP_IDF_VERSION_MAJOR >= 6
+  {
+    spi_host_device_t host = (_spi_num == FSPI) ? SPI2_HOST : SPI3_HOST;
+    PERIPH_RCC_ATOMIC()
+    {
+      spi_ll_enable_bus_clock(host, true);
+      spi_ll_reset_register(host);
+      spi_ll_enable_clock(host, true);
+    }
+  }
+#elif CONFIG_IDF_TARGET_ESP32S3
+  if (_spi_num == FSPI)
+  {
+    periph_ll_reset(PERIPH_SPI2_MODULE);"""
+assert s.count(old) == 1, "GFX ESP32SPI S3 block not found"
+s = s.replace(old, new)
+inc = '#include "Arduino_ESP32SPI.h"'
+s = s.replace(inc, inc + '\n#if CONFIG_IDF_TARGET_ESP32S3 && ESP_IDF_VERSION_MAJOR >= 6\n#include "hal/spi_ll.h"\n#endif', 1)
+open(p, "w").write(s)
+PY
+echo "UAT patch: Arduino_GFX ESP32SPI S3 spi_ll path"
+
 # Adafruit TinyUSB: IDF 6 sdkconfig has CONFIG_SOC_USB_OTG_SUPPORTED but no
 # CONFIG_USB_OTG_SUPPORTED, so CFG_TUD_ENABLED was 0 (TinyUSBDevice undeclared)
 f="$LIBS/Adafruit_TinyUSB_Arduino/src/arduino/ports/esp32/tusb_config_esp32.h"
