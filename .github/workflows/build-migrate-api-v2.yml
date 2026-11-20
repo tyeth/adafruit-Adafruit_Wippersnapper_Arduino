@@ -330,6 +330,8 @@ jobs:
           clone_retry --quiet https://github.com/adafruit/Adafruit-ST7735-Library.git /home/runner/Arduino/libraries/Adafruit-ST7735-Library
           clone_retry --quiet https://github.com/adafruit/Adafruit_TouchScreen.git /home/runner/Arduino/libraries/Adafruit_TouchScreen
           clone_retry --quiet https://github.com/adafruit/Adafruit_TinyUSB_Arduino /home/runner/Arduino/libraries/Adafruit_TinyUSB_Arduino
+      - name: "UAT: IDF 6 stand-in library patches"
+        run: bash .github/scripts/uat_idf6_lib_patches.sh
       - name: Install Dependencies (esptool)
         run: |
           pip3 install esptool==5.6.0
@@ -597,6 +599,8 @@ jobs:
           clone_retry --quiet https://github.com/adafruit/Adafruit-ST7735-Library.git /home/runner/Arduino/libraries/Adafruit-ST7735-Library
           clone_retry --quiet https://github.com/adafruit/Adafruit_TouchScreen.git /home/runner/Arduino/libraries/Adafruit_TouchScreen
           clone_retry --quiet https://github.com/adafruit/Adafruit_TinyUSB_Arduino /home/runner/Arduino/libraries/Adafruit_TinyUSB_Arduino
+      - name: "UAT: IDF 6 stand-in library patches"
+        run: bash .github/scripts/uat_idf6_lib_patches.sh
       - name: Restore cached nanopb
         id: cache-nanopb-restore
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
@@ -760,6 +764,8 @@ jobs:
           # UAT: Library Manager stops at SPIFlash 5.1.1 (5.1.2 rejected for symlinks); 5.1.2 has the IDF 6 esp_flash_t fix
           clone_retry --quiet --depth 1 -b 5.1.2 https://github.com/adafruit/Adafruit_SPIFlash.git /home/runner/Arduino/libraries/Adafruit_SPIFlash
           echo "UAT libs: SPIFlash $(grep ^version= /home/runner/Arduino/libraries/Adafruit_SPIFlash/library.properties), OneWireNg $(git -C /home/runner/Arduino/libraries/OneWireNg rev-parse --short HEAD)"
+      - name: "UAT: IDF 6 stand-in library patches"
+        run: bash .github/scripts/uat_idf6_lib_patches.sh
       - name: Restore cached nanopb
         id: cache-nanopb-restore
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
@@ -1321,6 +1327,8 @@ jobs:
           clone_retry --quiet https://github.com/adafruit/Adafruit-ST7735-Library.git /home/runner/Arduino/libraries/Adafruit-ST7735-Library
           clone_retry --quiet https://github.com/adafruit/Adafruit_TouchScreen.git /home/runner/Arduino/libraries/Adafruit_TouchScreen
           clone_retry --quiet https://github.com/adafruit/Adafruit_TinyUSB_Arduino /home/runner/Arduino/libraries/Adafruit_TinyUSB_Arduino
+      - name: "UAT: IDF 6 stand-in library patches"
+        run: bash .github/scripts/uat_idf6_lib_patches.sh
       - name: Restore cached nanopb
         id: cache-nanopb-restore
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
@@ -1475,6 +1483,8 @@ jobs:
           # UAT: Library Manager stops at SPIFlash 5.1.1 (5.1.2 rejected for symlinks); 5.1.2 has the IDF 6 esp_flash_t fix
           clone_retry --quiet --depth 1 -b 5.1.2 https://github.com/adafruit/Adafruit_SPIFlash.git /home/runner/Arduino/libraries/Adafruit_SPIFlash
           echo "UAT libs: SPIFlash $(grep ^version= /home/runner/Arduino/libraries/Adafruit_SPIFlash/library.properties), OneWireNg $(git -C /home/runner/Arduino/libraries/OneWireNg rev-parse --short HEAD)"
+      - name: "UAT: IDF 6 stand-in library patches"
+        run: bash .github/scripts/uat_idf6_lib_patches.sh
       - name: Restore cached nanopb
         id: cache-nanopb-restore
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6

@@ -13,6 +13,9 @@
  *
  */
 #include "hardware.h"
+#if defined(ARDUINO_ARCH_ESP32)
+#include <esp_idf_version.h>
+#endif
 #if defined(ARDUINO_ARCH_ESP32) || defined(ARDUINO_ARCH_RP2350)
 #ifdef ARDUINO_ARCH_ESP32
 #include <stdlib.h>
@@ -298,9 +301,17 @@ bool SleepHardware::RegisterExt0Wakeup(const char *pin_name, bool pin_level,
   // deep sleep GPIO wakeup
   if (esp_sleep_is_valid_wakeup_gpio(pin)) {
     // RTC-capable, use deep sleep GPIO wakeup
+#if ESP_IDF_VERSION_MAJOR >= 6
+    // ESP-IDF 6 removed esp_deep_sleep_enable_gpio_wakeup()
+    esp_sleep_gpio_wake_up_mode_t wakeup_mode =
+        pin_level ? ESP_GPIO_WAKEUP_GPIO_HIGH : ESP_GPIO_WAKEUP_GPIO_LOW;
+    rc = esp_sleep_enable_gpio_wakeup_on_hp_periph_powerdown(1ULL << pin,
+                                                             wakeup_mode);
+#else
     esp_deepsleep_gpio_wake_up_mode_t wakeup_mode =
         pin_level ? ESP_GPIO_WAKEUP_GPIO_HIGH : ESP_GPIO_WAKEUP_GPIO_LOW;
     rc = esp_deep_sleep_enable_gpio_wakeup(1ULL << pin, wakeup_mode);
+#endif
     if (rc != ESP_OK) {
       WS_DEBUG_PRINTLN(
           "[sleep] ERROR: Failed to enable deep sleep GPIO wakeup");
