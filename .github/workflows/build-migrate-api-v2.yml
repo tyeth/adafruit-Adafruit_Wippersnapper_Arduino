@@ -7,6 +7,8 @@ on:
   push:
     branches:
       - migrate-api-v2
+      # UAT: arduino-esp32 4.0.0 test branch on tyeth's fork
+      - bsp-v4-uat
   pull_request:
     # No 'edited' here: a title/body edit would start a run whose jobs all
     # skip, and that newest run hides this commit's real results in the PR's
@@ -61,7 +63,8 @@ on:
         default: ""
 
 env:
-  CI_ARDUINO_REF: ci-wippersnapper
+  # UAT: every ESP32 target on the arduino-esp32 4.0.0 tag (tyeth/ci-arduino)
+  CI_ARDUINO_REF: ci-wippersnapper-bsp-4-0-0
 
 jobs:
   nanopb-warm:
@@ -71,7 +74,7 @@ jobs:
     steps:
       - name: Check nanopb cache
         id: cache-nanopb
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ./nanopb-0.4.9.2.tar.gz
           key: nanopb-0.4.9.2.tar.gz
@@ -83,7 +86,7 @@ jobs:
           wget https://jpa.kapsi.fi/nanopb/download/nanopb-0.4.9.2.tar.gz
       - name: Save nanopb to cache
         if: steps.cache-nanopb.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ./nanopb-0.4.9.2.tar.gz
           key: nanopb-0.4.9.2.tar.gz
@@ -99,13 +102,13 @@ jobs:
       bsp: ${{ steps.resolve.outputs.bsp }}
       tools: ${{ steps.resolve.outputs.tools }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.ref }}
           sparse-checkout: .github
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: adafruit/ci-arduino
+          repository: tyeth/ci-arduino
           ref: ${{ env.CI_ARDUINO_REF }}
           path: ci
       - name: Resolve the BSP ref of every build target
@@ -130,12 +133,12 @@ jobs:
     steps:
       - name: Check BSP cache
         id: cache-bsp
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/Arduino/hardware/espressif/esp32
           key: ${{ matrix.bsp.key }}
           lookup-only: true
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: steps.cache-bsp.outputs.cache-hit != 'true'
         with:
           ref: ${{ inputs.ref }}
@@ -148,7 +151,7 @@ jobs:
           /home/runner/Arduino/hardware/espressif/esp32
       - name: Save BSP to cache
         if: steps.cache-bsp.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/Arduino/hardware/espressif/esp32
           key: ${{ matrix.bsp.key }}
@@ -168,12 +171,12 @@ jobs:
     steps:
       - name: Check ESP32 tools cache
         id: cache-tools
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/esp32-tools-dist
           key: ${{ matrix.tools.tools_key }}
           lookup-only: true
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: steps.cache-tools.outputs.cache-hit != 'true'
         with:
           ref: ${{ inputs.ref }}
@@ -197,7 +200,7 @@ jobs:
           du -sh /home/runner/esp32-tools-dist
       - name: Save ESP32 tools to cache
         if: steps.cache-tools.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/esp32-tools-dist
           key: ${{ matrix.tools.tools_key }}
@@ -232,10 +235,10 @@ jobs:
             "xiao_esp32s3",
           ]
     steps:
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.ref }}
       - name: Get WipperSnapper version
@@ -272,13 +275,13 @@ jobs:
             exit 1
           fi
           python3 generate_ws_version.py ${PR_SHA:+--sha "$PR_SHA"}
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: adafruit/ci-arduino
+          repository: tyeth/ci-arduino
           ref: ${{ env.CI_ARDUINO_REF }}
           path: ci
       - name: Checkout Board Definitions
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: adafruit/Wippersnapper_Boards
           ref: api-v2
@@ -288,7 +291,7 @@ jobs:
       - name: Restore cached ESP32 BSP
         id: cache-bsp
         if: ${{ fromJSON(needs.bsp-resolve.outputs.keys || '{}')[matrix.arduino-platform] != null }}
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/Arduino/hardware/espressif/esp32
           key: ${{ fromJSON(needs.bsp-resolve.outputs.keys)[matrix.arduino-platform] }}
@@ -302,7 +305,7 @@ jobs:
       - name: Restore cached ESP32 tool archives
         id: cache-tools
         if: ${{ fromJSON(needs.bsp-resolve.outputs.bsp || '{}')[matrix.arduino-platform].tools_key != null }}
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/esp32-tools-dist
           key: ${{ fromJSON(needs.bsp-resolve.outputs.bsp)[matrix.arduino-platform].tools_key }}
@@ -329,7 +332,7 @@ jobs:
           pip3 install esptool==5.6.0
       - name: Restore cached nanopb
         id: cache-nanopb-restore
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ./nanopb-0.4.9.2.tar.gz
           key: nanopb-0.4.9.2.tar.gz
@@ -443,7 +446,7 @@ jobs:
           echo "0x10000 wippersnapper.${{ matrix.arduino-platform }}.fatfs.${{ env.WS_VERSION }}.bin" >> new_flash_args
       - name: Check boot_app0 file existence (esp32sx built from core, not-source)
         id: check_files
-        uses: andstor/file-existence-action@v3
+        uses: andstor/file-existence-action@558493d6c74bf472d87c84eab196434afc2fa029 # v3
         with:
           files: "/home/runner/.arduino15/packages/esp32/hardware/esp32/*/tools/partitions/boot_app0.bin"
       - name: list arduino esp32 core files
@@ -470,7 +473,7 @@ jobs:
         run: |
           zip -r wippersnapper.${{ matrix.arduino-platform }}.fatfs.${{ env.WS_VERSION }}.zip wippersnapper.${{ matrix.arduino-platform }}.fatfs.${{ env.WS_VERSION }}.*
       - name: Upload build artifacts zip
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: build-files-${{ matrix.arduino-platform }}.${{ env.WS_VERSION }}-zip
           path: |
@@ -479,7 +482,7 @@ jobs:
         run: |
           mv examples/Wippersnapper_demo/build/*/Wippersnapper_demo.ino.uf2 wippersnapper.${{ matrix.arduino-platform }}.${{ env.WS_VERSION }}.uf2
       - name: Upload build artifact UF2 file
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: build-files-${{ matrix.arduino-platform }}.${{ env.WS_VERSION }}-uf2
           path: |
@@ -502,10 +505,10 @@ jobs:
             "qtpy_esp32s3",
           ]
     steps:
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.ref }}
       - name: Get WipperSnapper version
@@ -542,9 +545,9 @@ jobs:
             exit 1
           fi
           python3 generate_ws_version.py ${PR_SHA:+--sha "$PR_SHA"}
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: adafruit/ci-arduino
+          repository: tyeth/ci-arduino
           ref: ${{ env.CI_ARDUINO_REF }}
           path: ci
       - name: Install CI-Arduino
@@ -552,7 +555,7 @@ jobs:
       - name: Restore cached ESP32 BSP
         id: cache-bsp
         if: ${{ fromJSON(needs.bsp-resolve.outputs.keys || '{}')[matrix.arduino-platform] != null }}
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/Arduino/hardware/espressif/esp32
           key: ${{ fromJSON(needs.bsp-resolve.outputs.keys)[matrix.arduino-platform] }}
@@ -566,7 +569,7 @@ jobs:
       - name: Restore cached ESP32 tool archives
         id: cache-tools
         if: ${{ fromJSON(needs.bsp-resolve.outputs.bsp || '{}')[matrix.arduino-platform].tools_key != null }}
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/esp32-tools-dist
           key: ${{ fromJSON(needs.bsp-resolve.outputs.bsp)[matrix.arduino-platform].tools_key }}
@@ -590,7 +593,7 @@ jobs:
           clone_retry --quiet https://github.com/adafruit/Adafruit_TinyUSB_Arduino /home/runner/Arduino/libraries/Adafruit_TinyUSB_Arduino
       - name: Restore cached nanopb
         id: cache-nanopb-restore
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ./nanopb-0.4.9.2.tar.gz
           key: nanopb-0.4.9.2.tar.gz
@@ -616,7 +619,7 @@ jobs:
           mv examples/*/build/*/Wippersnapper_demo.ino.uf2 wippersnapper.${{ matrix.arduino-platform }}.${{ env.WS_VERSION }}.uf2
           mv examples/*/build/*/Wippersnapper_demo.ino.bin wippersnapper.${{ matrix.arduino-platform }}.${{ env.WS_VERSION }}.bin
       - name: upload build artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: build-files-${{ matrix.arduino-platform }}.${{ env.WS_VERSION }}
           path: |
@@ -662,10 +665,10 @@ jobs:
           - offset: "0x0"
             arduino-platform: "wippersnapper_feather_esp32c6"
     steps:
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.ref }}
       - name: Get WipperSnapper version
@@ -702,13 +705,13 @@ jobs:
             exit 1
           fi
           python3 generate_ws_version.py ${PR_SHA:+--sha "$PR_SHA"}
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: adafruit/ci-arduino
+          repository: tyeth/ci-arduino
           ref: ${{ env.CI_ARDUINO_REF }}
           path: ci
       - name: Checkout Board Definitions
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: adafruit/Wippersnapper_Boards
           ref: api-v2
@@ -718,7 +721,7 @@ jobs:
       - name: Restore cached ESP32 BSP
         id: cache-bsp
         if: ${{ fromJSON(needs.bsp-resolve.outputs.keys || '{}')[matrix.arduino-platform] != null }}
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/Arduino/hardware/espressif/esp32
           key: ${{ fromJSON(needs.bsp-resolve.outputs.keys)[matrix.arduino-platform] }}
@@ -732,7 +735,7 @@ jobs:
       - name: Restore cached ESP32 tool archives
         id: cache-tools
         if: ${{ fromJSON(needs.bsp-resolve.outputs.bsp || '{}')[matrix.arduino-platform].tools_key != null }}
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/esp32-tools-dist
           key: ${{ fromJSON(needs.bsp-resolve.outputs.bsp)[matrix.arduino-platform].tools_key }}
@@ -750,7 +753,7 @@ jobs:
           clone_retry --quiet https://github.com/pstolarz/OneWireNg.git /home/runner/Arduino/libraries/OneWireNg
       - name: Restore cached nanopb
         id: cache-nanopb-restore
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ./nanopb-0.4.9.2.tar.gz
           key: nanopb-0.4.9.2.tar.gz
@@ -784,7 +787,7 @@ jobs:
           mv examples/Wippersnapper_demo/build/*/Wippersnapper_demo.ino.partitions.bin wippersnapper.${{ matrix.arduino-platform }}.littlefs.${{ env.WS_VERSION }}.partitions.bin
       - name: Check boot_app0 file existence (esp32 built from core, not-source)
         id: check_files
-        uses: andstor/file-existence-action@v3
+        uses: andstor/file-existence-action@558493d6c74bf472d87c84eab196434afc2fa029 # v3
         with:
           files: "/home/runner/.arduino15/packages/esp32/hardware/esp32/*/tools/partitions/boot_app0.bin"
       - name: boot_app0 file from arduino-cli core
@@ -823,7 +826,7 @@ jobs:
         run: |
           zip -r wippersnapper.${{ matrix.arduino-platform }}.littlefs.${{ env.WS_VERSION }}.zip wippersnapper.${{ matrix.arduino-platform }}.littlefs.${{ env.WS_VERSION }}.*
       - name: upload build artifacts zip
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: build-files-${{ matrix.arduino-platform }}.${{ env.WS_VERSION }}
           path: |
@@ -832,7 +835,7 @@ jobs:
   build-samd:
     name: 🏗️SAMD
     needs: nanopb-warm
-    if: ${{ !cancelled() }}
+    if: false # UAT: ESP32 only
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -844,10 +847,10 @@ jobs:
             "metro_m4_airliftlite_tinyusb",
           ]
     steps:
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.ref }}
       - name: Get WipperSnapper version
@@ -884,16 +887,16 @@ jobs:
             exit 1
           fi
           python3 generate_ws_version.py ${PR_SHA:+--sha "$PR_SHA"}
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: adafruit/ci-arduino
+          repository: tyeth/ci-arduino
           ref: ${{ env.CI_ARDUINO_REF }}
           path: ci
       - name: Install CI-Arduino
         run: bash ci/actions_install.sh
       - name: Restore cached core downloads
         id: cache-core
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/.arduino15/staging/packages
           key: arduino15-staging-${{ github.job }}-
@@ -908,7 +911,7 @@ jobs:
           clone_retry --quiet https://github.com/adafruit/Adafruit_TinyUSB_Arduino /home/runner/Arduino/libraries/Adafruit_TinyUSB_Arduino
       - name: Restore cached nanopb
         id: cache-nanopb-restore
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ./nanopb-0.4.9.2.tar.gz
           key: nanopb-0.4.9.2.tar.gz
@@ -935,7 +938,7 @@ jobs:
       - name: Save core downloads to cache
         if: ${{ !cancelled() && steps.core-key.outputs.key != '' && steps.core-key.outputs.key != steps.cache-core.outputs.cache-matched-key }}
         continue-on-error: true
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/.arduino15/staging/packages
           key: ${{ steps.core-key.outputs.key }}
@@ -945,7 +948,7 @@ jobs:
           mv examples/*/build/*/Wippersnapper_demo.ino.uf2 wippersnapper.${{ matrix.arduino-platform }}.${{ env.WS_VERSION }}.uf2
           mv examples/*/build/*/Wippersnapper_demo.ino.hex wippersnapper.${{ matrix.arduino-platform }}.${{ env.WS_VERSION }}.hex
       - name: upload build artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: build-files-${{ matrix.arduino-platform }}.${{ env.WS_VERSION }}
           path: |
@@ -955,7 +958,7 @@ jobs:
   build-rp2040:
     name: 🏗️RP2040
     needs: nanopb-warm
-    if: ${{ !cancelled() }}
+    if: false # UAT: ESP32 only
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -971,10 +974,10 @@ jobs:
           "metro_rp2350_tinyusb"
           ]
     steps:
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.ref }}
       - name: Get WipperSnapper version
@@ -1011,16 +1014,16 @@ jobs:
             exit 1
           fi
           python3 generate_ws_version.py ${PR_SHA:+--sha "$PR_SHA"}
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: adafruit/ci-arduino
+          repository: tyeth/ci-arduino
           ref: ${{ env.CI_ARDUINO_REF }}
           path: ci
       - name: Install CI-Arduino
         run: bash ci/actions_install.sh
       - name: Restore cached core downloads
         id: cache-core
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/.arduino15/staging/packages
           key: arduino15-staging-${{ github.job }}-
@@ -1035,7 +1038,7 @@ jobs:
           clone_retry --quiet https://github.com/adafruit/Adafruit_TinyUSB_Arduino /home/runner/Arduino/libraries/Adafruit_TinyUSB_Arduino
       - name: Restore cached nanopb
         id: cache-nanopb-restore
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ./nanopb-0.4.9.2.tar.gz
           key: nanopb-0.4.9.2.tar.gz
@@ -1062,7 +1065,7 @@ jobs:
       - name: Save core downloads to cache
         if: ${{ !cancelled() && steps.core-key.outputs.key != '' && steps.core-key.outputs.key != steps.cache-core.outputs.cache-matched-key }}
         continue-on-error: true
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/.arduino15/staging/packages
           key: ${{ steps.core-key.outputs.key }}
@@ -1071,7 +1074,7 @@ jobs:
         run: |
           mv examples/*/build/*/Wippersnapper_demo.ino.uf2 wippersnapper.${{ matrix.arduino-platform }}.${{ env.WS_VERSION }}.uf2 || mv examples/*/build/*/Wippersnapper_demo_offline.ino.uf2 wippersnapper_offline.${{ matrix.arduino-platform }}.${{ env.WS_VERSION }}.uf2 || mv examples/*/build/*/Wippersnapper_debug.ino.uf2 wippersnapper_debug.${{ matrix.arduino-platform }}.${{ env.WS_VERSION }}.uf2
       - name: upload build artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: build-files-${{ matrix.arduino-platform }}.${{ env.WS_VERSION }}
           path: |
@@ -1080,17 +1083,17 @@ jobs:
   build-esp8266:
     name: 🏗️ESP8266
     needs: nanopb-warm
-    if: ${{ !cancelled() }}
+    if: false # UAT: ESP32 only
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         arduino-platform: ["feather_esp8266"]
     steps:
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.ref }}
       - name: Get WipperSnapper version
@@ -1127,16 +1130,16 @@ jobs:
             exit 1
           fi
           python3 generate_ws_version.py ${PR_SHA:+--sha "$PR_SHA"}
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: adafruit/ci-arduino
+          repository: tyeth/ci-arduino
           ref: ${{ env.CI_ARDUINO_REF }}
           path: ci
       - name: Install CI-Arduino
         run: bash ci/actions_install.sh
       - name: Restore cached core downloads
         id: cache-core
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/.arduino15/staging/packages
           key: arduino15-staging-${{ github.job }}-
@@ -1148,7 +1151,7 @@ jobs:
           clone_retry --quiet https://github.com/pstolarz/Arduino-Temperature-Control-Library.git /home/runner/Arduino/libraries/Arduino-Temperature-Control-Library
       - name: Restore cached nanopb
         id: cache-nanopb-restore
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ./nanopb-0.4.9.2.tar.gz
           key: nanopb-0.4.9.2.tar.gz
@@ -1175,7 +1178,7 @@ jobs:
       - name: Save core downloads to cache
         if: ${{ !cancelled() && steps.core-key.outputs.key != '' && steps.core-key.outputs.key != steps.cache-core.outputs.cache-matched-key }}
         continue-on-error: true
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/.arduino15/staging/packages
           key: ${{ steps.core-key.outputs.key }}
@@ -1193,7 +1196,7 @@ jobs:
         run: |
           zip -r wippersnapper.${{ matrix.arduino-platform }}.littlefs.${{ env.WS_VERSION }}.zip wippersnapper.${{ matrix.arduino-platform }}.littlefs.${{ env.WS_VERSION }}.*
       - name: upload build artifacts zip
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: build-files-${{ matrix.arduino-platform }}.${{ env.WS_VERSION }}
           path: |
@@ -1220,10 +1223,10 @@ jobs:
             "metro_esp32s3_debug",
           ]
     steps:
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.ref }}
       - name: Get WipperSnapper version
@@ -1260,9 +1263,9 @@ jobs:
             exit 1
           fi
           python3 generate_ws_version.py ${PR_SHA:+--sha "$PR_SHA"}
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: adafruit/ci-arduino
+          repository: tyeth/ci-arduino
           ref: ${{ env.CI_ARDUINO_REF }}
           path: ci
       - name: Install CI-Arduino
@@ -1270,7 +1273,7 @@ jobs:
       - name: Restore cached ESP32 BSP
         id: cache-bsp
         if: ${{ fromJSON(needs.bsp-resolve.outputs.keys || '{}')[matrix.arduino-platform] != null }}
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/Arduino/hardware/espressif/esp32
           key: ${{ fromJSON(needs.bsp-resolve.outputs.keys)[matrix.arduino-platform] }}
@@ -1284,7 +1287,7 @@ jobs:
       - name: Restore cached ESP32 tool archives
         id: cache-tools
         if: ${{ fromJSON(needs.bsp-resolve.outputs.bsp || '{}')[matrix.arduino-platform].tools_key != null }}
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/esp32-tools-dist
           key: ${{ fromJSON(needs.bsp-resolve.outputs.bsp)[matrix.arduino-platform].tools_key }}
@@ -1308,7 +1311,7 @@ jobs:
           clone_retry --quiet https://github.com/adafruit/Adafruit_TinyUSB_Arduino /home/runner/Arduino/libraries/Adafruit_TinyUSB_Arduino
       - name: Restore cached nanopb
         id: cache-nanopb-restore
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ./nanopb-0.4.9.2.tar.gz
           key: nanopb-0.4.9.2.tar.gz
@@ -1337,7 +1340,7 @@ jobs:
           mv examples/*/build/*/wippersnapper_debug.ino.uf2 wippersnapper.${{ matrix.arduino-platform }}.${{ env.WS_VERSION }}.uf2
           mv examples/*/build/*/wippersnapper_debug.ino.bin wippersnapper.${{ matrix.arduino-platform }}.${{ env.WS_VERSION }}.bin
       - name: upload build artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: build-files-dev-${{ matrix.arduino-platform }}.${{ env.WS_VERSION }}
           path: |
@@ -1371,10 +1374,10 @@ jobs:
           - offset: "0x2000"
             arduino-platform: "espressif_esp32c5_devkitc_1_n8r4_debug"
     steps:
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.ref }}
       - name: Get WipperSnapper version
@@ -1411,13 +1414,13 @@ jobs:
             exit 1
           fi
           python3 generate_ws_version.py ${PR_SHA:+--sha "$PR_SHA"}
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: adafruit/ci-arduino
+          repository: tyeth/ci-arduino
           ref: ${{ env.CI_ARDUINO_REF }}
           path: ci
       - name: Checkout Board Definitions
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: adafruit/Wippersnapper_Boards
           ref: api-v2
@@ -1427,7 +1430,7 @@ jobs:
       - name: Restore cached ESP32 BSP
         id: cache-bsp
         if: ${{ fromJSON(needs.bsp-resolve.outputs.keys || '{}')[matrix.arduino-platform] != null }}
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/Arduino/hardware/espressif/esp32
           key: ${{ fromJSON(needs.bsp-resolve.outputs.keys)[matrix.arduino-platform] }}
@@ -1441,7 +1444,7 @@ jobs:
       - name: Restore cached ESP32 tool archives
         id: cache-tools
         if: ${{ fromJSON(needs.bsp-resolve.outputs.bsp || '{}')[matrix.arduino-platform].tools_key != null }}
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/esp32-tools-dist
           key: ${{ fromJSON(needs.bsp-resolve.outputs.bsp)[matrix.arduino-platform].tools_key }}
@@ -1459,7 +1462,7 @@ jobs:
           clone_retry --quiet https://github.com/pstolarz/OneWireNg.git /home/runner/Arduino/libraries/OneWireNg
       - name: Restore cached nanopb
         id: cache-nanopb-restore
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ./nanopb-0.4.9.2.tar.gz
           key: nanopb-0.4.9.2.tar.gz
@@ -1495,7 +1498,7 @@ jobs:
           mv examples/wippersnapper_debug/build/*/wippersnapper_debug.ino.partitions.bin wippersnapper.${{ matrix.arduino-platform }}.littlefs.${{ env.WS_VERSION }}.partitions.bin
       - name: Check boot_app0 file existence (esp32 built from core, not-source)
         id: check_files
-        uses: andstor/file-existence-action@v3
+        uses: andstor/file-existence-action@558493d6c74bf472d87c84eab196434afc2fa029 # v3
         with:
           files: "/home/runner/.arduino15/packages/esp32/hardware/esp32/*/tools/partitions/boot_app0.bin"
       - name: boot_app0 file from arduino-cli core
@@ -1536,7 +1539,7 @@ jobs:
         run: |
           zip -r wippersnapper.${{ matrix.arduino-platform }}.littlefs.${{ env.WS_VERSION }}.zip wippersnapper.${{ matrix.arduino-platform }}.littlefs.${{ env.WS_VERSION }}.*
       - name: upload build artifacts zip
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: build-files-dev-${{ matrix.arduino-platform }}.${{ env.WS_VERSION }}
           path: |
@@ -1548,7 +1551,7 @@ jobs:
   build-other-dev:
     name: 🏗️RP2/SAMD/ESP8266(DEV)
     needs: nanopb-warm
-    if: ${{ !cancelled() }}
+    if: false # UAT: ESP32 only
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -1573,10 +1576,10 @@ jobs:
             core: esp8266
             extra-libs: "pstolarz/OneWireNg pstolarz/Arduino-Temperature-Control-Library"
     steps:
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.ref }}
       - name: Get WipperSnapper version
@@ -1613,16 +1616,16 @@ jobs:
             exit 1
           fi
           python3 generate_ws_version.py ${PR_SHA:+--sha "$PR_SHA"}
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: adafruit/ci-arduino
+          repository: tyeth/ci-arduino
           ref: ${{ env.CI_ARDUINO_REF }}
           path: ci
       - name: Install CI-Arduino
         run: bash ci/actions_install.sh
       - name: Restore cached core downloads
         id: cache-core
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/.arduino15/staging/packages
           key: arduino15-staging-${{ github.job }}-${{ matrix.core }}-
@@ -1637,7 +1640,7 @@ jobs:
           done
       - name: Restore cached nanopb
         id: cache-nanopb-restore
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ./nanopb-0.4.9.2.tar.gz
           key: nanopb-0.4.9.2.tar.gz
@@ -1668,7 +1671,7 @@ jobs:
       - name: Save core downloads to cache
         if: ${{ !cancelled() && steps.core-key.outputs.key != '' && steps.core-key.outputs.key != steps.cache-core.outputs.cache-matched-key }}
         continue-on-error: true
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/.arduino15/staging/packages
           key: ${{ steps.core-key.outputs.key }}
@@ -1681,7 +1684,7 @@ jobs:
           done
           ls wippersnapper.${{ matrix.arduino-platform }}.${{ env.WS_VERSION }}.*
       - name: upload build artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: build-files-dev-${{ matrix.arduino-platform }}.${{ env.WS_VERSION }}
           path: |
@@ -1691,18 +1694,19 @@ jobs:
   # which is dropped on migrate-api-v2. Doxygen only deploys from main/master.
   clang_and_doxy:
     name: 🔎Clang & Doxygen
+    if: false # UAT: ESP32 only
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.x"
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.ref }}
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: adafruit/ci-arduino
+          repository: tyeth/ci-arduino
           ref: ${{ env.CI_ARDUINO_REF }}
           path: ci
       - name: pre-install
@@ -1729,7 +1733,7 @@ jobs:
 
     steps:
       - name: Merge Artifacts from Builds
-        uses: actions/upload-artifact/merge@v7
+        uses: actions/upload-artifact/merge@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: build-files
           pattern: build-files-!(dev)-*
@@ -1745,7 +1749,7 @@ jobs:
 
     steps:
       - name: Merge Artifacts from Dev Builds
-        uses: actions/upload-artifact/merge@v7
+        uses: actions/upload-artifact/merge@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: build-files-dev
           pattern: build-files-dev-*
