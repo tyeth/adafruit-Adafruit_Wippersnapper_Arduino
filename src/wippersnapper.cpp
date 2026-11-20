@@ -307,27 +307,52 @@ void wippersnapper::provision() {
 }
 
 /*!
-    @brief    Handles a Checkin Response message and initializes the
-              device's GPIO classes.
+    @brief    Applies a Checkin Response message and initializes the
+              device's GPIO classes. Call outside the MQTT callback.
     @param    stream
-              Incoming data stream from buffer.
+              Buffer stream over the stored checkin response.
     @returns  True if Checkin Response decoded and parsed successfully,
               False otherwise.
 */
-bool handleCheckinResponse(pb_istream_t *stream) {
-  // Decode the Checkin Response message
+bool applyCheckinResponse(pb_istream_t *stream) {
+  // Hash the raw response before decoding, the second decode pass applies
+  // component adds. On a light sleep wake an unchanged response is already
+  // applied, any other checkin applies it in full.
+  bool changed = Ws->CheckInModel->ResponseChanged(stream);
+  if (Ws->CheckInModel->IsWakeCheckin() && !changed) {
+    WS_DEBUG_PRINTLN("[checkin] Response unchanged since last checkin");
+    return Ws->CheckInModel->SkipResponse(stream);
+  }
+  if (changed) {
+    WS_DEBUG_PRINTLN("[checkin] Response is new or changed");
+  } else {
+    WS_DEBUG_PRINTLN("[checkin] Response unchanged, applying in full");
+  }
+
+  if (Ws->CheckInModel->IsWakeCheckin()) {
+    // Remove components applied from an earlier response but not in this
+    // one, before adding new ones that may reuse their pins
+    Ws->CheckInModel->RemoveStaleComponents(stream);
+  } else {
+    // Not a light sleep wake: apply every component as before, recording
+    // them afresh so a later wake can reconcile against this response
+    Ws->CheckInModel->ForgetComponents();
+  }
+
+  // Save a copy of the stream, the component adds are decoded in a second
+  // pass after the controllers are configured
+  pb_istream_t adds_stream = *stream;
+
+  // Decode the Checkin Response message, without executing component adds
   WS_DEBUG_PRINTLN("[app] Decoding Checkin Response message");
   if (!Ws->CheckInModel->ProcessResponse(stream)) {
-    Ws->haltErrorV2("Unable to decode checkin response, rebooting soon...");
+    Ws->haltErrorV2("Checkin response was malformed, rebooting soon...");
   }
 
   // Validate the broker's response code, halt and reboot if invalid
   if (!Ws->CheckInModel->ValidateResponse()) {
     Ws->haltErrorV2("Invalid checkin response, rebooting soon...");
   }
-
-  // Configure sleep settings if enabled
-  Ws->CheckInModel->configureSleep();
 
   // Configure controller settings using Response
   WS_DEBUG_PRINTLN("[checkin] Configuring controllers");
@@ -339,11 +364,49 @@ bool handleCheckinResponse(pb_istream_t *stream) {
   WS_DEBUG_PRINTLNVAR(Ws->CheckInModel->GetReferenceVoltage());
   Ws->CheckInModel->ConfigureControllers();
   WS_DEBUG_PRINTLN("[checkin] Controllers configured");
+
+  // Execute the component adds now that the controllers are configured. A
+  // failed add is reported by its handler and skipped.
+  WS_DEBUG_PRINTLN("[checkin] Adding components");
+  if (!Ws->CheckInModel->ProcessComponentAdds(&adds_stream)) {
+    WS_DEBUG_PRINTLN("[checkin] ERROR: Unable to decode component adds, "
+                     "continuing");
+  }
+  if (Ws->CheckInModel->GetAddsFailed() > 0) {
+    WS_DEBUG_PRINT("[checkin] ");
+    WS_DEBUG_PRINTVAR(Ws->CheckInModel->GetAddsFailed());
+    WS_DEBUG_PRINT(" of ");
+    WS_DEBUG_PRINTVAR(Ws->CheckInModel->GetAddsTotal());
+    WS_DEBUG_PRINTLN(" component adds failed, continuing");
+  }
+
+  // Configure sleep settings if enabled, after the component adds: an ext0
+  // wake pin takes its pull from its Digital/Analog component, which only
+  // exists once the adds have run
+  Ws->CheckInModel->configureSleep();
   Ws->NetworkFSM();
 
-  // Complete is published by the checkin caller, not from inside this MQTT
-  // callback where it could consume another packet's reply
   return true;
+}
+
+/*!
+    @brief    Handles a Checkin Response message from inside the MQTT
+              callback. Only stores it: the checkin caller applies it with
+              applyCheckinResponse() once the callback has returned, as
+              applying it publishes (component and device errors, Complete)
+              and publishing here can consume another packet's reply, e.g.
+              an in-flight PINGRESP (#1066).
+    @param    stream
+              Incoming data stream from buffer.
+    @returns  True if the response was stored, False otherwise.
+*/
+bool handleCheckinResponse(pb_istream_t *stream) {
+  // A response outside of a checkin has no model to store into
+  if (Ws->CheckInModel == nullptr) {
+    WS_DEBUG_PRINTLN("[app] WARNING: Unexpected Checkin Response, ignoring");
+    return false;
+  }
+  return Ws->CheckInModel->StoreResponse(stream);
 }
 
 // Decoders //
@@ -418,6 +481,23 @@ bool routeBrokerToDevice(pb_istream_t *stream, const pb_field_t *field,
 */
 void cbBrokerToDevice(char *data, uint16_t len) {
   WS_DEBUG_PRINTLN("=> New B2D message!");
+  // Usable B2D payload capacity: the subscription buffer is allocated with
+  // WS_MQTT_BUFFER_SZ bytes (checked in generateWSTopics()), one byte of which
+  // is reserved for the NUL terminator.
+  const uint32_t cap = (uint32_t)WS_MQTT_BUFFER_SZ - 1;
+  WS_DEBUG_PRINT("[mqtt] B2D rx len=");
+  WS_DEBUG_PRINTVAR((uint32_t)len);
+  WS_DEBUG_PRINT(" cap=");
+  WS_DEBUG_PRINTLNVAR(cap);
+  if ((uint32_t)len >= cap) {
+    WS_DEBUG_PRINT(
+        "[mqtt] RX ERROR: B2D payload overfilled buffer, truncated (len=");
+    WS_DEBUG_PRINTVAR((uint32_t)len);
+    WS_DEBUG_PRINT(" cap=");
+    WS_DEBUG_PRINTVAR(cap);
+    WS_DEBUG_PRINTLN(")");
+    return;
+  }
 #if defined(WS_DEBUG) && (WS_DEBUG_PROTO == 1)
   // Hex dump of the raw incoming payload
   WS_PRINTER.print("[proto] B2D payload, len=");
@@ -439,9 +519,13 @@ void cbBrokerToDevice(char *data, uint16_t len) {
   // Decode message
   pb_istream_t istream = pb_istream_from_buffer((uint8_t *)data, len);
   if (!pb_decode(&istream, ws_signal_BrokerToDevice_fields, &msg_signal)) {
-    WS_DEBUG_PRINTLN("ERROR: Unable to decode BrokerToDevice message!");
+    WS_DEBUG_PRINT("[mqtt] RX ERROR: B2D decode failed (len=");
+    WS_DEBUG_PRINTVAR((uint32_t)len);
+    WS_DEBUG_PRINT("): ");
+    WS_DEBUG_PRINTLNVAR(PB_GET_ERROR(&istream));
     return;
   }
+  WS_DEBUG_PRINTLN("[mqtt] B2D decode ok");
 }
 
 /*!
@@ -559,9 +643,40 @@ bool wippersnapper::generateWSTopics() {
   // Build the broker-to-device topic
   snprintf(Ws->_topicB2d, lenSignalTopic, "%s/ws-b2d/%s",
            Ws->_configV2.aio_user, _device_uidV2);
-  // Subscribe to broker-to-device topic
-  _subscribeB2d = new Adafruit_MQTT_Subscribe(Ws->_mqttV2, Ws->_topicB2d, 1);
-  Ws->_mqttV2->subscribe(_subscribeB2d);
+  // Subscribe to broker-to-device topic. The subscription's payload buffer
+  // must be at least as large as the MQTT packet buffer so a B2D payload that
+  // fits in the packet buffer is never truncated.
+  _subscribeB2d = new Adafruit_MQTT_Subscribe(Ws->_mqttV2, Ws->_topicB2d, 1,
+                                              WS_MQTT_BUFFER_SZ);
+  if (_subscribeB2d == NULL) {
+    WS_DEBUG_PRINTLN("[mqtt] ERROR: B2D subscription not created");
+    free(Ws->_topicB2d);
+    Ws->_topicB2d = NULL;
+    return false;
+  }
+  WS_DEBUG_PRINT("[mqtt] b2d sub buf: lastread_max=");
+  WS_DEBUG_PRINTVAR((uint32_t)_subscribeB2d->lastread_max);
+  WS_DEBUG_PRINT(" mqtt_buf=");
+  WS_DEBUG_PRINTLNVAR((uint32_t)Ws->_mqttV2->bufferSize());
+  bool subOk = true;
+  if (_subscribeB2d->lastread_max == 0) {
+    WS_DEBUG_PRINTLN("[mqtt] ERROR: B2D subscription buffer alloc failed");
+    subOk = false;
+  } else if (_subscribeB2d->lastread_max < Ws->_mqttV2->bufferSize()) {
+    WS_DEBUG_PRINTLN(
+        "[mqtt] ERROR: B2D subscription buffer smaller than MQTT buffer");
+    subOk = false;
+  } else if (!Ws->_mqttV2->subscribe(_subscribeB2d)) {
+    WS_DEBUG_PRINTLN("[mqtt] ERROR: subscribe to B2D topic failed");
+    subOk = false;
+  }
+  if (!subOk) {
+    free(Ws->_topicB2d);
+    Ws->_topicB2d = NULL;
+    delete _subscribeB2d;
+    _subscribeB2d = NULL;
+    return false;
+  }
   _subscribeB2d->setCallback(cbBrokerToDevice);
 
   // Create global device to broker topic
@@ -822,6 +937,14 @@ void wippersnapper::haltErrorV2(const char *error,
   }
   WS_DEBUG_PRINTLNVAR(error);
   statusLEDSolid(ledStatusColor);
+#ifdef USE_TINYUSB
+  if (reboot) {
+    // Disconnect from the host before the WDT resets the device, so the host
+    // sees a clean unplug rather than a device that stops responding
+    WS_PRINTER.flush();
+    TinyUSBDevice.detach();
+  }
+#endif
   for (;;) {
     if (!reboot) {
       Ws->_wdt->feed(); // Feed the WDT indefinitely to hold the WIPPER drive
@@ -840,6 +963,17 @@ void wippersnapper::haltErrorV2(const char *error,
 }
 
 /*!
+    @brief    Prints " tag=<tag>" and a newline, terminating a
+              "[mqtt] ... D2B ..." log line.
+    @param    tag
+              The DeviceToBroker payload tag (which_payload).
+*/
+static void printD2bTag(pb_size_t tag) {
+  WS_DEBUG_PRINT(" tag=");
+  WS_DEBUG_PRINTLNVAR((uint32_t)tag);
+}
+
+/*!
     @brief    Wraps and publishes a DeviceToBroker signal message
                 to Adafruit IO.
     @param    which_payload
@@ -852,11 +986,20 @@ void wippersnapper::haltErrorV2(const char *error,
 bool wippersnapper::PublishD2b(pb_size_t which_payload, void *payload) {
   WS_DEBUG_PRINTLN("=> Publishing DeviceToBroker signal message...");
 
+  // The MQTT client and D2B topic must exist before anything is published
+  if (Ws->_mqttV2 == NULL || Ws->_topicD2b == NULL) {
+    WS_DEBUG_PRINT("[mqtt] TX ERROR: D2B not ready (client/topic null)");
+    printD2bTag(which_payload);
+    return false;
+  }
+
   // Alloc memory on heap for the DeviceToBroker message
   ws_signal_DeviceToBroker *msg =
       (ws_signal_DeviceToBroker *)malloc(sizeof(ws_signal_DeviceToBroker));
   if (msg == NULL) {
-    WS_DEBUG_PRINTLN("ERROR: Failed to allocate memory for D2B message!");
+    WS_DEBUG_PRINT("[mqtt] TX ERROR: D2B msg alloc failed size=");
+    WS_DEBUG_PRINTVAR((uint32_t)sizeof(ws_signal_DeviceToBroker));
+    printD2bTag(which_payload);
     return false;
   }
 
@@ -911,7 +1054,8 @@ bool wippersnapper::PublishD2b(pb_size_t which_payload, void *payload) {
     msg->payload.sleep = *(ws_sleep_D2B *)payload;
     break;
   default:
-    WS_DEBUG_PRINTLN("ERROR: Invalid signal payload type, bailing out!");
+    WS_DEBUG_PRINT("[mqtt] TX ERROR: D2B invalid payload tag");
+    printD2bTag(which_payload);
     free(msg);
     return false;
   }
@@ -920,18 +1064,42 @@ bool wippersnapper::PublishD2b(pb_size_t which_payload, void *payload) {
   size_t szMessageBuf;
   if (!pb_get_encoded_size(&szMessageBuf, ws_signal_DeviceToBroker_fields,
                            msg)) {
-    WS_DEBUG_PRINTLN(
-        "ERROR: Unable to get encoded size of signal message, bailing out!");
+    WS_DEBUG_PRINT("[mqtt] TX ERROR: D2B encoded size failed");
+    printD2bTag(which_payload);
+    free(msg);
+    return false;
+  }
+
+  // Refuse messages that will not fit in the MQTT packet buffer, rather than
+  // letting Adafruit_MQTT::publishPacket() send them truncated. This runs
+  // before the msgBuf VLA so an oversized message never takes stack space.
+  // Overhead: fixed header (1) + remaining-length varint (max 4) + topic
+  // length (2) + topic + QoS 1 packet id (2)
+  size_t mqttBufSz = Ws->_mqttV2->bufferSize();
+  size_t d2bOverhead = 1 + 4 + 2 + strlen(Ws->_topicD2b) + 2;
+  if (mqttBufSz <= d2bOverhead || szMessageBuf > mqttBufSz - d2bOverhead) {
+    WS_DEBUG_PRINT("[mqtt] TX ERROR: D2B too large payload=");
+    WS_DEBUG_PRINTVAR((uint32_t)szMessageBuf);
+    WS_DEBUG_PRINT(" max=");
+    if (mqttBufSz > d2bOverhead) {
+      WS_DEBUG_PRINTVAR((uint32_t)(mqttBufSz - d2bOverhead));
+    } else {
+      WS_DEBUG_PRINTVAR((uint32_t)0);
+    }
+    printD2bTag(which_payload);
     free(msg);
     return false;
   }
 
   // Size the message buffer to fit the encoded d2b message
   uint8_t msgBuf[szMessageBuf];
-  // Encode the signal message into the buffer
+  // Encode the signal message into the buffer. ws_pb_encode() prints the
+  // nanopb error string itself on failure.
   pb_ostream_t stream = pb_ostream_from_buffer(msgBuf, szMessageBuf);
   if (!ws_pb_encode(&stream, ws_signal_DeviceToBroker_fields, msg)) {
-    WS_DEBUG_PRINTLN("ERROR: Unable to encode d2b message, bailing out!");
+    WS_DEBUG_PRINT("[mqtt] TX ERROR: D2B encode failed size=");
+    WS_DEBUG_PRINTVAR((uint32_t)szMessageBuf);
+    printD2bTag(which_payload);
     free(msg);
     return false;
   }
@@ -949,14 +1117,20 @@ bool wippersnapper::PublishD2b(pb_size_t which_payload, void *payload) {
   WS_PRINTER.println();
 #endif
   // Attempt to publish the signal message to the broker
-  WS_DEBUG_PRINT("Publishing signal message to broker...");
+  WS_DEBUG_PRINTLN("Publishing signal message to broker...");
   if (!Ws->_mqttV2->publish(Ws->_topicD2b, msgBuf, szMessageBuf, 1)) {
-    WS_DEBUG_PRINTLN("ERROR: Failedf to publish d2b message to broker!");
+    WS_DEBUG_PRINT("[mqtt] TX ERROR: D2B publish failed size=");
+    WS_DEBUG_PRINTVAR((uint32_t)szMessageBuf);
+    printD2bTag(which_payload);
     free(msg);
     return false;
   }
 
   WS_DEBUG_PRINTLN("Published!");
+  WS_DEBUG_PRINT("[mqtt] D2B tx ok tag=");
+  WS_DEBUG_PRINTVAR((uint32_t)which_payload);
+  WS_DEBUG_PRINT(" size=");
+  WS_DEBUG_PRINTLNVAR((uint32_t)szMessageBuf);
   // Free the allocated message's memory
   free(msg);
   return true;
@@ -1122,6 +1296,12 @@ void wippersnapper::connect() {
 #endif
     // Call the TL signal decoder to parse the incoming JSON data
     callDecodeB2D();
+#if defined(ARDUINO_ARCH_ESP32) || defined(ARDUINO_ARCH_RP2350)
+    // Arm sleep only now that components are added, an ext0 wakeup pin must
+    // already be configured by the Digital or Analog controller
+    if (!Ws->_sdCardV2->ApplySleepConfig())
+      haltErrorV2("Failed to configure sleep from config.json!");
+#endif
     WS_DEBUG_PRINTLN("[Offline] Hardware configured, skipping network setup "
                      "and running app...");
     // Blink status LED to green to indicate successful configuration
@@ -1149,7 +1329,27 @@ void wippersnapper::connect() {
     haltErrorV2("Unable to generate MQTT client ID");
     return;
   }
+  uint32_t heapBefore = WS_FREE_HEAP();
   setupMQTTClient(mqttClientId);
+  uint32_t heapAfter = WS_FREE_HEAP();
+  if (Ws->_mqttV2 == NULL) {
+    WS_DEBUG_PRINTLN("[mqtt] ERROR: MQTT client not created");
+    haltErrorV2("Unable to create MQTT client");
+    return;
+  }
+  WS_DEBUG_PRINT("[mqtt] buf alloc: requested=");
+  WS_DEBUG_PRINTVAR((uint32_t)WS_MQTT_BUFFER_SZ);
+  WS_DEBUG_PRINT(" got=");
+  WS_DEBUG_PRINTVAR((uint32_t)Ws->_mqttV2->bufferSize());
+  WS_DEBUG_PRINT(" heap_before=");
+  WS_DEBUG_PRINTVAR(heapBefore);
+  WS_DEBUG_PRINT(" heap_after=");
+  WS_DEBUG_PRINTLNVAR(heapAfter);
+  if (Ws->_mqttV2->bufferSize() == 0) {
+    WS_DEBUG_PRINTLNVAR(Ws->_mqttV2->connectErrorString(-3));
+    haltErrorV2("Unable to allocate MQTT buffer");
+    return;
+  }
   WS_DEBUG_PRINTLN("Set up MQTT client successfully!");
 
   WS_DEBUG_PRINTLN("Generating device's MQTT topics...");
@@ -1175,39 +1375,7 @@ void wippersnapper::connect() {
   Ws->_wdt->feed();
   WS_DEBUG_PRINTLN("Connected to Adafruit IO");
 
-  // TODO: Possibly refactor checkin process into its own function
-  // or component class for clarity
-  // TODO: Remove logging from checkin process,
-  // but only after we test on staging
-  Ws->CheckInModel = new CheckinModel();
-  WS_DEBUG_PRINTLN("Creating checkin request...");
-  // Publish the checkin request
-  if (!Ws->CheckInModel->Checkin(BOARD_ID, WS_VERSION)) {
-    haltErrorV2("ERROR: Unable to create and/or checkin request");
-  }
-  WS_DEBUG_PRINTLN("Published checkin request...");
-  // Poll for checkin response
-  WS_DEBUG_PRINTLN("Waiting for checkin response...");
-  Ws->_wdt->feed();
-  // NOTE: If we do not receive a response within a certain time frame,
-  // the WDT will reset the device and try again
-  while (!Ws->CheckInModel->GotResponse()) {
-    Ws->_mqttV2->processPackets(
-        WS_MQTT_POLL_TIMEOUT_MS); // TODO: Test with lower timeout value
-    pingBrokerV2();               // Keep MQTT connection alive
-  }
-  // Publish the complete response message to indicate the checkin routine is
-  // done and the device is ready for use. Done here rather than in the
-  // response callback, which may run inside pingBrokerV2() while it waits for
-  // a PINGRESP: publishing there consumed the PINGRESP while waiting for the
-  // PUBACK ("Dropped a packet"), failing the ping and forcing a reconnect.
-  if (!Ws->CheckInModel->Complete()) {
-    WS_DEBUG_PRINTLN("ERROR: Unable to publish checkin complete message");
-  }
-  WS_DEBUG_PRINTLN("Completed checkin process!");
-  // Perform cleanup for checkin process, we don't need it anymore
-  delete Ws->CheckInModel;
-  Ws->CheckInModel = nullptr;
+  checkin();
 
   // Set the status LED to green to indicate successful configuration
   setStatusLEDColor(0x00A300, Ws->status_pixel_brightnessV2);
@@ -1219,19 +1387,102 @@ void wippersnapper::connect() {
 }
 
 /*!
+    @brief    Publishes a CheckinRequest and blocks until the broker's
+              CheckinResponse has been handled.
+    @param    timeout_ms
+              Time to wait for the response, in milliseconds. 0 halts on a
+              publish failure and waits for the WDT to reset the device if no
+              response arrives.
+    @param    wake
+              True if checking in after a light sleep wake, where the
+              response is reconciled against the last one applied.
+    @returns  True if the response was handled, False on a publish failure or
+              timeout.
+*/
+bool wippersnapper::checkin(uint32_t timeout_ms, bool wake) {
+  // TODO: Possibly refactor checkin process into a component class
+  // for clarity
+  // TODO: Remove logging from checkin process,
+  // but only after we test on staging
+  Ws->CheckInModel = new CheckinModel();
+  Ws->CheckInModel->SetWakeCheckin(wake);
+  WS_DEBUG_PRINTLN("Creating checkin request...");
+  // Publish the checkin request
+  bool got_response = false;
+  if (!Ws->CheckInModel->Checkin(BOARD_ID, WS_VERSION)) {
+    if (timeout_ms == 0)
+      haltErrorV2("ERROR: Unable to create and/or checkin request");
+    WS_DEBUG_PRINTLN("ERROR: Unable to create and/or checkin request");
+  } else {
+    WS_DEBUG_PRINTLN("Published checkin request...");
+    // Poll for checkin response
+    WS_DEBUG_PRINTLN("Waiting for checkin response...");
+    Ws->_wdt->feed();
+    // NOTE: Without a timeout, if we do not receive a response within a
+    // certain time frame, the WDT will reset the device and try again
+    unsigned long start = millis();
+    while (!Ws->CheckInModel->GotResponse() &&
+           (timeout_ms == 0 || (millis() - start) < timeout_ms)) {
+      Ws->_mqttV2->processPackets(
+          WS_MQTT_POLL_TIMEOUT_MS); // TODO: Test with lower timeout value
+      pingBrokerV2();               // Keep MQTT connection alive
+    }
+    got_response = Ws->CheckInModel->GotResponse();
+    if (!got_response) {
+      WS_DEBUG_PRINTLN("ERROR: Timed out waiting for checkin response");
+    } else {
+      // Apply the response now the MQTT callback has returned
+      pb_istream_t response = Ws->CheckInModel->GetStoredResponse();
+      applyCheckinResponse(&response);
+      // Publish the complete response message to indicate the checkin routine
+      // is done and the device is ready for use. Done here rather than in the
+      // response callback, which may run inside pingBrokerV2() while it waits
+      // for a PINGRESP: publishing there consumed the PINGRESP while waiting
+      // for the PUBACK ("Dropped a packet"), failing the ping and forcing a
+      // reconnect.
+      // Without Complete, IO and the device are out of sync (the response is
+      // already applied), so retry and then reboot to check in afresh rather
+      // than run or sleep with a mismatched config.
+      bool completed = false;
+      for (int attempt = 0; attempt < 3 && !completed; attempt++) {
+        completed = Ws->CheckInModel->Complete();
+        if (!completed) {
+          WS_DEBUG_PRINTLN("ERROR: Unable to publish checkin complete message");
+          Ws->_wdt->feed();
+        }
+      }
+      if (!completed) {
+        haltErrorV2("ERROR: Unable to publish checkin complete message, "
+                    "rebooting soon...");
+      }
+      Ws->CheckInModel->SaveResponseHash();
+      WS_DEBUG_PRINTLN("Completed checkin process!");
+    }
+  }
+  // Perform cleanup for checkin process, we don't need it anymore
+  delete Ws->CheckInModel;
+  Ws->CheckInModel = nullptr;
+  return got_response;
+}
+
+/*!
     @brief    Determines which loop() to call depending on the power mode.
 */
 void wippersnapper::run() {
 #if defined(ARDUINO_ARCH_ESP32) || defined(ARDUINO_ARCH_RP2350)
-  // Sleep mode may be enabled during runtime
-  while (!Ws->_sleep_controller->isSleepEnabled()) {
-    loop();
-  }
-  // Sleep is enabled: feed the TWDT and hand control to the sleep-aware loop.
-  WS_DEBUG_PRINTLN("[app] Sleep enabled, entering loopSleep()");
-  Ws->_wdt->feed();
   while (true) {
-    loopSleep();
+    // Sleep mode may be enabled during runtime
+    while (!Ws->_sleep_controller->isSleepEnabled()) {
+      loop();
+    }
+    // Sleep is enabled: feed the TWDT and hand control to loopSleep()
+    WS_DEBUG_PRINTLN("[app] Sleep enabled, entering loopSleep()");
+    Ws->_wdt->feed();
+    // A checkin after a light sleep wake may disable sleep again
+    while (Ws->_sleep_controller->isSleepEnabled()) {
+      loopSleep();
+    }
+    WS_DEBUG_PRINTLN("[app] Sleep disabled, entering loop()");
   }
 #else
   while (true) {
@@ -1387,14 +1638,30 @@ void wippersnapper::loopSleep() {
   } else {
     WS_DEBUG_PRINTLN("[app] loopSleep() duration elapsed, entering sleep...");
   }
-  Ws->_sleep_controller->StartSleep();
+  while (true) {
+    Ws->_sleep_controller->StartSleep();
 
-  // For light sleep, we woke up here
-  Ws->_sleep_controller->WakeFromLightSleep();
-  // Reconnect WiFi/MQTT after light sleep wake
-  if (!Ws->_sdCardV2->isModeOffline()) {
+    // For light sleep, we woke up here
+    Ws->_sleep_controller->WakeFromLightSleep();
+    if (Ws->_sdCardV2->isModeOffline())
+      break;
+    // Reconnect WiFi/MQTT after light sleep wake
     WS_DEBUG_PRINTLN("[app] Reconnecting network after light sleep wake...");
     NetworkFSM(true);
+    // Sync with IO before sleeping again, an unchanged response is skipped
+    WS_DEBUG_PRINTLN("[app] Checking in after light sleep wake...");
+    if (checkin(WS_TIMEOUT_WAKE_CHECKIN, true)) {
+      // Teal, not green: green means a full boot checkin completed
+      setStatusLEDColor(WS_COLOR_RGB32_TEAL, Ws->status_pixel_brightnessV2);
+      delay(100);
+      setStatusLEDColor(WS_COLOR_RGB32_BLACK, Ws->status_pixel_brightnessV2);
+      break;
+    }
+    // Save battery: sleep again with the existing config, retry on next wake
+    WS_DEBUG_PRINTLN("[app] Wake checkin failed, going back to sleep...");
+    if (Ws->_mqttV2 != nullptr)
+      Ws->_mqttV2->disconnect();
+    disconnect(true);
   }
   // For light sleep, this allows the next loopSleep() cycle to begin
 }

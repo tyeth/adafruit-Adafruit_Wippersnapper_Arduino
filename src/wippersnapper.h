@@ -183,8 +183,13 @@
 #define WS_DEVICE_PING_MS                                                      \
   5000 ///< Interval at which device sends ping to broker, in milliseconds
 #define WS_TIMEOUT_WDT 60000 ///< App WDT timeout, in milliseconds
+#define WS_TIMEOUT_WAKE_CHECKIN                                                \
+  30000 ///< Max wait for a checkin response after a light sleep wake, in
+        ///< milliseconds. Must be below WS_TIMEOUT_WDT.
 #define WS_MQTT_POLL_TIMEOUT_MS                                                \
   10 ///< MQTT polling (processPackets()) timeout, in milliseconds
+#define WS_MQTT_BUFFER_SZ                                                      \
+  2048 ///< MQTT packet buffer (TX+RX) and B2D subscription buffer size, bytes
 #define WS_DEFAULT_OFFLINE_HEARTBEAT_INTERVAL_MS                               \
   60000 ///< Default offline mode heartbeat interval, in milliseconds
 
@@ -249,6 +254,7 @@ public:
   virtual void _connect();
   virtual void _disconnect(bool wifi_off = true);
   void connect();
+  bool checkin(uint32_t timeout_ms = 0, bool wake = false);
   void disconnect(bool wifi_off = true);
   virtual void getMacAddr();
   virtual int32_t getRSSI();

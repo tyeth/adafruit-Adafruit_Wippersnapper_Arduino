@@ -15,8 +15,6 @@
 #ifndef WS_SLEEP_HARDWARE_H
 #define WS_SLEEP_HARDWARE_H
 
-#if defined(ARDUINO_ARCH_ESP32) || defined(ARDUINO_ARCH_RP2350)
-
 #ifdef ARDUINO_ARCH_ESP32
 #include "driver/gpio.h"
 #include "driver/rtc_io.h"
@@ -29,6 +27,7 @@
 #endif
 
 #include "wippersnapper.h"
+#if defined(ARDUINO_ARCH_ESP32) || defined(ARDUINO_ARCH_RP2350)
 
 /*!
     @brief  Interface for interacting with hardware's sleep functionality.
@@ -42,16 +41,19 @@ public:
   const char *GetWakeupReasonName();
 #ifdef ARDUINO_ARCH_ESP32
   bool RegisterRTCTimerWakeup(uint64_t duration);
-  bool RegisterExt0Wakeup(const char *pin_name, bool pin_level, bool pin_pull);
+  bool RegisterExt0Wakeup(const char *pin_name, bool pin_level,
+                          ws_digital_Direction pull_direction);
   esp_sleep_source_t GetEspSleepSource();
   const char *GetEspSleepExt0PinName();
   bool GetEspSleepExt0Level();
-  bool GetEspSleepExt0Pull();
+  ws_digital_Direction GetEspSleepExt0PullDirection();
 #endif
   ws_sleep_SleepMode GetSleepMode();
   void SetSleepMode(ws_sleep_SleepMode mode);
   void CalculateSleepDuration();
   int GetSleepDurationSecs();
+  void StoreTimerDuration(uint32_t duration_secs);
+  uint32_t GetTimerDuration();
   void SetSleepEnterTime();
   void GetSleepWakeupCause();
   // Storage API for RTC timestamps

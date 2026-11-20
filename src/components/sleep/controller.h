@@ -15,10 +15,10 @@
 #ifndef WS_SLEEP_CONTROLLER_H
 #define WS_SLEEP_CONTROLLER_H
 
+#include "wippersnapper.h"
 #if defined(ARDUINO_ARCH_ESP32) || defined(ARDUINO_ARCH_RP2350)
 #include "hardware.h"
 #include "model.h"
-#include "wippersnapper.h"
 
 class wippersnapper; ///< Forward declaration
 class SleepModel;    ///< Forward declaration
@@ -63,6 +63,8 @@ private:
   // Sleep configuration
   bool ConfigureSleep(const ws_sleep_SleepConfig *msg);
   bool ConfigureLightSleep(const ws_sleep_SleepConfig *msg);
+  bool getExt0PinPullDirection(const char *pin_name,
+                               ws_digital_Direction *pull_direction);
   SleepModel *_sleep_model;       ///< Sleep model
   SleepHardware *_sleep_hardware; ///< Sleep hardware
   bool _wake_enable_pin_state;    ///< Value of BOOT button during class
