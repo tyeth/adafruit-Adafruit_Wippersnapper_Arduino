@@ -1,5 +1,7 @@
 # HIL tests
 
+Setting up a new HIL host? See [INSTALL.md](INSTALL.md).
+
 ## Running tests
 
 From the repository root:
