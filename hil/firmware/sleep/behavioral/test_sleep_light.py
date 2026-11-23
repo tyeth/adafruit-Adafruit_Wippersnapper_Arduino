@@ -82,15 +82,13 @@ def timer_sleep_wake_cycle(board, serial, protomq, uid, board_definition,
     sh.expect_wake_checkin(protomq, uid, board_definition, wake_response,
                            LIGHT_WAKE_CHECKIN_TIMEOUT)
 
-    # The first wake's response is new (now with sleepEnabled), but its
-    # SleepConfig is the one already armed, so it isn't re-applied; every
-    # later response is unchanged, so skipped
+    # The first wake's response is new (now with sleepEnabled), and the
+    # runtime SleepConfig cleared the saved checkin hash, so its SleepConfig
+    # is re-applied, re-arming the timer; every later response is
+    # unchanged, so skipped
     changed = cycle == 1
     if changed:
-        serial.expect(r"^\[checkin\] Response is new or changed$",
-                      timeout=CHECKIN_TIMEOUT)
-        serial.expect(r"^\[app\] Sleep configuration unchanged$",
-                      timeout=CHECKIN_TIMEOUT)
+        expect_wake_checkin_reapplies(serial, sh.TIMER_ARMED_RE)
     else:
         serial.expect(r"^\[checkin\] Response unchanged since last checkin$",
                       timeout=CHECKIN_TIMEOUT)
@@ -177,6 +175,19 @@ def test_sleep_light_timer_soak(board, secrets_name, flashed_board, serial,
 # --- ext0 ---------------------------------------------------------------
 
 
+def expect_wake_checkin_reapplies(serial, armed_re):
+    """The first wake checkin after a runtime SleepConfig: that message
+    cleared the saved checkin hash (#1148), so the response counts as
+    changed and its SleepConfig is applied again, logging armed_re as it
+    re-arms the wake source."""
+    serial.expect(r"^\[checkin\] Response is new or changed$",
+                  timeout=CHECKIN_TIMEOUT)
+    serial.expect(r"^\[app\] Processing sleep configuration from checkin$",
+                  timeout=CHECKIN_TIMEOUT)
+    serial.expect(armed_re, timeout=5)
+    serial.expect(r"^Sleep Enabled: YES$", timeout=5)
+
+
 def expect_light_reconnect_checkin(serial, protomq, uid, board_definition,
                                    wake_response):
     """After a light sleep wake: the DUT reconnects and checks in, the
@@ -197,8 +208,9 @@ def test_sleep_light_ext0(board, secrets_name, flashed_board, serial,
     """The wake pin, added with a pull holding it idle, arms an ext0 light
     sleep: the DUT stays asleep while the pin idles, wakes where it slept
     as soon as the probe drives the wake level, hands the pin back to its
-    digital component, reconnects, checks in (its SleepConfig unchanged,
-    so ext0 stays armed), and sleeps again."""
+    digital component, reconnects, checks in (the runtime SleepConfig
+    cleared the checkin hash, so its SleepConfig is re-applied, re-arming
+    ext0), and sleeps again."""
     v = sh.EXT0_VARIANTS[variant]
     # --- Arrange ------------------------------------------------------
     uid, wake_response, config = sh.ext0_arrange(
@@ -234,14 +246,12 @@ def test_sleep_light_ext0(board, secrets_name, flashed_board, serial,
                       f"expected {FIRST_WAKE_SLEEP_CYCLE}")
 
     # 4. It reconnects and checks in: the response, now with sleepEnabled,
-    # differs from the boot's, but its SleepConfig is the one already
-    # armed, so ext0 isn't re-armed
+    # differs from the boot's, and the runtime SleepConfig cleared the saved
+    # checkin hash, so its SleepConfig is re-applied, re-arming ext0 with
+    # the pin's pull
     expect_light_reconnect_checkin(serial, protomq, uid, board_definition,
                                    wake_response)
-    serial.expect(r"^\[checkin\] Response is new or changed$",
-                  timeout=CHECKIN_TIMEOUT)
-    serial.expect(r"^\[app\] Sleep configuration unchanged$",
-                  timeout=CHECKIN_TIMEOUT)
+    expect_wake_checkin_reapplies(serial, sh.ext0_armed_re(v))
     serial.expect(r"^Completed checkin process!$", timeout=CHECKIN_TIMEOUT)
 
     # 5. ...publishes the pin, idle again, and sleeps again, staying asleep:
