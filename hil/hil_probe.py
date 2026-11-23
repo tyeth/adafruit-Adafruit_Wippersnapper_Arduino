@@ -69,7 +69,8 @@ import time
 # each supports.
 PROBE_TYPES = {"digital_gpio": ("mcp23017_gpio",), "pwm_input": ("pi_gpio",),
                "analog_input": ("mcp4728_dac",),
-               "onewire_sensor": ("ds18b20",), "i2c_bus": ("i2c_devices",)}
+               "onewire_sensor": ("ds18b20",), "i2c_bus": ("i2c_devices",),
+               "uart_sensor": ("pms5003",)}
 EXPANDER_PINS = 16
 EXPANDER_PIN_RE = re.compile(r"^GP([AB])([0-7])$")
 # A DUT digital pin name as the broker sends it; the firmware's
@@ -114,6 +115,24 @@ def onewire_sensor_pin(config):
         raise ProbeError(f"onewire_sensor probe 'pin' must be a DUT digital "
                          f"pin like 'D33', got {pin!r}")
     return pin
+
+
+def uart_sensor_pins(config):
+    """The DUT pins a uart_sensor probe's sensor is wired to, as the
+    broker names them: (pin_rx, pin_tx), e.g. ("D7", "D8"). pin_rx is the
+    DUT pin receiving the sensor's TX."""
+    _check_type("uart_sensor", config)
+    pins = []
+    for key in ("pin_rx", "pin_tx"):
+        pin = config.get(key)
+        if not isinstance(pin, str) or not DUT_DIGITAL_PIN_RE.match(pin):
+            raise ProbeError(f"uart_sensor probe '{key}' must be a DUT "
+                             f"digital pin like 'D7', got {pin!r}")
+        pins.append(pin)
+    if pins[0] == pins[1]:
+        raise ProbeError(f"uart_sensor probe 'pin_rx' and 'pin_tx' must "
+                         f"differ, both are {pins[0]!r}")
+    return tuple(pins)
 
 
 # The 7-bit I2C addresses a device can have; the rest are reserved, and the

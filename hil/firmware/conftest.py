@@ -519,6 +519,18 @@ def onewire_pin(board):
         pytest.fail(f"board '{board.name}': {e}", pytrace=False)
 
 
+@pytest.fixture
+def uart_pins(board):
+    """The DUT pins the board entry's uart_sensor probe says a UART sensor
+    is wired to, (pin_rx, pin_tx), e.g. ("D7", "D8"); skips the test if
+    the entry has none."""
+    config = _probe_config(board, "uart_sensor")
+    try:
+        return hil_probe.uart_sensor_pins(config)
+    except hil_probe.ProbeError as e:
+        pytest.fail(f"board '{board.name}': {e}", pytrace=False)
+
+
 @dataclass(frozen=True)
 class I2cDevices:
     port: int        # the i2cPortId in the board's definition.json

@@ -49,6 +49,7 @@ wired to the DUT's pins, one probe per role, each with a hardware `type`:
   "pwm_input": { "type": "pi_gpio", "pin_map": { "D27": "D16" } },
   "analog_input": { "type": "mcp4728_dac", "address": "0x60", "pin_map": { "A34": "A" } },
   "onewire_sensor": { "type": "ds18b20", "pin": "D33" },
+  "uart_sensor": { "type": "pms5003", "pin_rx": "D7", "pin_tx": "D8" },
   "i2c_bus": { "type": "i2c_devices", "port": 0, "addresses": ["0x77"] }
 }
 ```
@@ -76,6 +77,11 @@ wired to the DUT's pins, one probe per role, each with a hardware `type`:
 - `onewire_sensor` (`ds18b20`): the `ds18x20/` tests talk to a DS18B20
   wired to the DUT, not to this host. `pin` is the DUT pin its data line is
   on, the name the broker sends (e.g. `D33`), with a 4.7k pull-up to 3V.
+- `uart_sensor` (`pms5003`): the `uart/` tests talk to a PMS5003 wired to
+  the DUT's UART, not to this host. `pin_rx`/`pin_tx` are the DUT pins
+  the broker sends (e.g. `D7`/`D8`): the sensor's TX goes to `pin_rx`, its
+  RX to `pin_tx`. The tests build the Add from
+  `components/uart/pms5003/definition.json` in Wippersnapper_Components.
 - `i2c_bus` (`i2c_devices`): the `i2c/` tests probe the I2C devices wired
   to the DUT, not to this host. `port` is the `i2cPortId` in the board's
   Wippersnapper_Boards `definition.json`, whose `SCL`/`SDA` give the pins
