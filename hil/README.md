@@ -50,6 +50,8 @@ wired to the DUT's pins, one probe per role, each with a hardware `type`:
   "analog_input": { "type": "mcp4728_dac", "address": "0x60", "pin_map": { "A34": "A" } },
   "onewire_sensor": { "type": "ds18b20", "pin": "D33" },
   "uart_sensor": { "type": "pms5003", "pin_rx": "D7", "pin_tx": "D8" },
+  "neopixel_strand": { "type": "neopixel", "pin": "D26", "num": 10, "ordering": "RGBW" },
+  "dotstar_strand": { "type": "dotstar", "pin_data": "D25", "pin_clock": "D4", "num": 10, "ordering": "BRG" },
   "i2c_bus": { "type": "i2c_devices", "port": 0, "addresses": ["0x77"] }
 }
 ```
@@ -82,6 +84,15 @@ wired to the DUT's pins, one probe per role, each with a hardware `type`:
   the broker sends (e.g. `D7`/`D8`): the sensor's TX goes to `pin_rx`, its
   RX to `pin_tx`. The tests build the Add from
   `components/uart/pms5003/definition.json` in Wippersnapper_Components.
+- `neopixel_strand` (`neopixel`) and `dotstar_strand` (`dotstar`): the
+  `pixels/` tests drive a NeoPixel and a DotStar strand wired to the DUT,
+  not to this host. The pins are the names the broker sends: `D` plus the
+  GPIO number, as the firmware takes the number after the first character
+  (e.g. `D26` for the Feather ESP32 V2's `A0`, not `A0`). A NeoPixel's
+  data line is on `pin`; a DotStar's on `pin_data`, its clock on
+  `pin_clock`. `num` (default `1`) is the pixel count, `ordering` the color
+  order: for a NeoPixel `GRB`, `GRBW`, `RGB`, `RGBW` or `BRG`, for a
+  DotStar `GRB`, `RGB`, `BRG`, `GBR` or `BGR`.
 - `i2c_bus` (`i2c_devices`): the `i2c/` tests probe the I2C devices wired
   to the DUT, not to this host. `port` is the `i2cPortId` in the board's
   Wippersnapper_Boards `definition.json`, whose `SCL`/`SDA` give the pins

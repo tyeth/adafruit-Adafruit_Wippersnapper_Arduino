@@ -70,7 +70,9 @@ import time
 PROBE_TYPES = {"digital_gpio": ("mcp23017_gpio",), "pwm_input": ("pi_gpio",),
                "analog_input": ("mcp4728_dac",),
                "onewire_sensor": ("ds18b20",), "i2c_bus": ("i2c_devices",),
-               "uart_sensor": ("pms5003",)}
+               "uart_sensor": ("pms5003",), 
+               "neopixel_strand": ("neopixel",),
+               "dotstar_strand": ("dotstar",)}
 EXPANDER_PINS = 16
 EXPANDER_PIN_RE = re.compile(r"^GP([AB])([0-7])$")
 # A DUT digital pin name as the broker sends it; the firmware's
@@ -133,6 +135,61 @@ def uart_sensor_pins(config):
         raise ProbeError(f"uart_sensor probe 'pin_rx' and 'pin_tx' must "
                          f"differ, both are {pins[0]!r}")
     return tuple(pins)
+
+
+# The color orderings a strand probe may have, as Order names in
+# pixels.proto without the "O_" prefix: those GetStrandOrderNeoPixel() and
+# GetStrandOrderDotStar() map (they map any other to their default)
+NEOPIXEL_ORDERINGS = ("GRB", "GRBW", "RGB", "RGBW", "BRG")
+DOTSTAR_ORDERINGS = ("GRB", "RGB", "BRG", "GBR", "BGR")
+
+
+def _strand_pin(role, config, key, example):
+    """The DUT pin config's key names, checked as for role."""
+    pin = config.get(key)
+    if not isinstance(pin, str) or not DUT_DIGITAL_PIN_RE.match(pin):
+        raise ProbeError(f"{role} probe '{key}' must be a DUT digital pin "
+                         f"like {example!r}, got {pin!r}")
+    return pin
+
+
+def _strand_num_ordering(role, config, orderings):
+    """config's pixel count (default 1) and color ordering, as a
+    pixels.proto Order, e.g. (10, "O_RGBW")."""
+    num = config.get("num", 1)
+    if isinstance(num, bool) or not isinstance(num, int) or num < 1:
+        raise ProbeError(f"{role} probe 'num' must be a pixel count of at "
+                         f"least 1, got {num!r}")
+    ordering = config.get("ordering")
+    if ordering not in orderings:
+        raise ProbeError(f"{role} probe 'ordering' must be one of "
+                         f"{orderings}, got {ordering!r}")
+    return num, f"O_{ordering}"
+
+
+def neopixel_strand(config):
+    """The DUT pin, pixel count and color ordering of a neopixel_strand
+    probe's strand, as the broker names them: (pin, num, ordering), e.g.
+    ("D26", 10, "O_RGBW")."""
+    role = "neopixel_strand"
+    _check_type(role, config)
+    pin = _strand_pin(role, config, "pin", "D26")
+    return (pin, *_strand_num_ordering(role, config, NEOPIXEL_ORDERINGS))
+
+
+def dotstar_strand(config):
+    """The DUT data and clock pins, pixel count and color ordering of a
+    dotstar_strand probe's strand, as the broker names them: (pin_data,
+    pin_clock, num, ordering), e.g. ("D25", "D4", 10, "O_BRG")."""
+    role = "dotstar_strand"
+    _check_type(role, config)
+    pin_data = _strand_pin(role, config, "pin_data", "D25")
+    pin_clock = _strand_pin(role, config, "pin_clock", "D4")
+    if pin_data == pin_clock:
+        raise ProbeError(f"{role} probe 'pin_data' and 'pin_clock' must "
+                         f"differ, both are {pin_data!r}")
+    return (pin_data, pin_clock,
+            *_strand_num_ordering(role, config, DOTSTAR_ORDERINGS))
 
 
 # The 7-bit I2C addresses a device can have; the rest are reserved, and the
