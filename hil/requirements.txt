@@ -16,3 +16,4 @@ adafruit-circuitpython-tca9548a
 adafruit-circuitpython-vcnl4040
 gpiod
 lgpio
+openai>=1.60

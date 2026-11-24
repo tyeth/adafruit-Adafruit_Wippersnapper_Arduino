@@ -74,12 +74,7 @@ def write(serial, protomq, uid, strand, color):
 
 def hold(protomq, uid, strand, name, color, seconds=HOLD_SECONDS):
     """Hold strand at color, just written, for seconds, expecting no
-    error.component for it meanwhile.
-
-    The hook for checking the strand's color: nothing reads it back yet,
-    so this only waits. Camera instrumentation, when it lands, goes here
-    and asserts the strand shows color (name, e.g. "red") during the
-    hold."""
+    error.component for it meanwhile."""
     log.info("%s: holding %s (0x%08X) for %ss", strand.pin, name, color,
              seconds)
     protomq.assert_no_d2b_message(uid, "error.component",

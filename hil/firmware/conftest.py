@@ -138,6 +138,7 @@ FIRMWARE_DIR = Path(__file__).resolve().parent
 HIL_DIR = FIRMWARE_DIR.parent
 sys.path.insert(0, str(HIL_DIR))
 import hil_board_utils  # noqa: E402
+import hil_camera as _hil_camera  # noqa: E402
 import hil_probe  # noqa: E402
 import hil_protomq  # noqa: E402
 
@@ -538,6 +539,18 @@ class PixelStrand:
     num: int               # pixels on the strand
     ordering: str          # a pixels.proto Order, e.g. "O_RGBW"
     pin_clock: str = None  # a DotStar's DUT clock pin, e.g. "D4"
+
+
+@pytest.fixture
+def hil_camera():
+    """Photographs the DUT with this host's Pi camera and has a vision
+    model report what the NeoPixel strand shows: a function taking no
+    arguments that returns hil_camera.capture()'s envelope. Needs
+    OPENAI_API_KEY; $HIL_CAMERA_ROI crops to the strand (see
+    hil/hil_camera.py)."""
+    if not os.environ.get("OPENAI_API_KEY"):
+        pytest.fail("hil_camera needs OPENAI_API_KEY", pytrace=False)
+    return _hil_camera.capture
 
 
 @pytest.fixture

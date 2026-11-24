@@ -7,9 +7,9 @@ A NeoPixel strand is wired to a DUT pin; the board entry's neopixel_strand
 probe names the pin, pixel count and color ordering (the neopixel_strand
 fixture). The broker adds, writes and removes the strand, and the tests
 check the DUT handles each, by its serial log, without publishing a
-component error. The sequence test holds each color for a while, for
-camera instrumentation to check (pixels_helpers.hold()); nothing on this
-host reads the pixels' color back yet.
+component error. After each fill, the color sequence and on/off tests
+photograph the strand with the hil_camera fixture and assert it shows
+that color.
 
 Exercises:
 - `src/components/pixels/controller.cpp::Router()`
@@ -30,16 +30,12 @@ import logging
 import pytest
 
 from pixels_helpers import (BRIGHTNESS, CHECKIN_TIMEOUT, CRASH_RE,
-                            MAX_PIXEL_STRANDS, NOT_FOUND, ON_OFF, add,
-                            assert_no_errors, remove, write, write_sequence)
+                            MAX_PIXEL_STRANDS, NOT_FOUND, add,
+                            assert_no_errors, remove, write)
 
 
 log = logging.getLogger("hil.pixels")
 
-# The Write's color, 0xWWRRGGBB: white is the most significant byte (for
-# RGBW pixels), then red, green, blue. Each channel differs, so a swapped
-# ordering would show on the strand.
-COLOR = 0x11FF8040
 # How many add/write/remove cycles the slot-overflow test runs: past every
 # slot, so a Remove that frees none has Handle_Pixels_Add() write beyond
 # _pixel_strands[] by the last cycles
@@ -50,54 +46,129 @@ OVERFLOW_CYCLES = MAX_PIXEL_STRANDS + 2
 def test_pixels_neopixel_add_write_remove(board, secrets_name, flashed_board,
                                           serial, protomq, checkin,
                                           neopixel_strand):
+    """Add a NeoPixel strand, fill it with one color, then remove it. The DUT
+    should handle each message and publish no error.component."""
     # --- Arrange ------------------------------------------------------
+    strand = neopixel_strand
+    # 0xWWRRGGBB: white is the most significant byte (for RGBW pixels),
+    # then red, green, blue. Each channel differs, so a swapped ordering
+    # would show on the strand.
+    color = 0x11FF8040
     uid = checkin()
-    log.info("strand: %s, brightness %d, color 0x%08X", neopixel_strand,
-             BRIGHTNESS, COLOR)
+    log.info("strand: %s, brightness %d, color 0x%08X", strand, BRIGHTNESS,
+             color)
 
     # --- Act ----------------------------------------------------------
-    add(serial, protomq, uid, neopixel_strand)
-    write(serial, protomq, uid, neopixel_strand, COLOR)
-    remove(serial, protomq, uid, neopixel_strand)
+    # Each step sends one message from the broker, then waits for the DUT's
+    # serial log to show it handled it; a step fails the test if not.
+
+    # pixels.Add -> "[pixels] Added NeoPixel strand on pin <gpio>"
+    add(serial, protomq, uid, strand)
+
+    # pixels.Write of color -> "[pixels]: Filling strand!"
+    write(serial, protomq, uid, strand, color)
+
+    # pixels.Remove -> "[pixels] Removed pixel strand from pin: <gpio>"
+    remove(serial, protomq, uid, strand)
 
     # --- Assert -------------------------------------------------------
-    # Each step was logged above, in order; none failed
-    assert_no_errors(serial, protomq, uid, neopixel_strand)
+    # No pixels failure on serial, and no error.component for the strand
+    assert_no_errors(serial, protomq, uid, strand)
 
 
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 def test_pixels_neopixel_color_sequence(board, secrets_name, flashed_board,
                                         serial, protomq, checkin,
-                                        neopixel_strand):
+                                        neopixel_strand, hil_camera):
+    """Fill a NeoPixel strand red, blue, then green. After each fill, the
+    camera should see the strand lit in that color."""
     # --- Arrange ------------------------------------------------------
+    strand = neopixel_strand
+    # (name, 0xWWRRGGBB), white off
+    colors = (("red", 0x00FF0000),
+              ("blue", 0x000000FF),
+              ("green", 0x0000FF00))
     uid = checkin()
-    add(serial, protomq, uid, neopixel_strand)
 
-    # --- Act ----------------------------------------------------------
-    # Red, blue, then green, each held for HOLD_SECONDS
-    write_sequence(serial, protomq, uid, neopixel_strand)
-    remove(serial, protomq, uid, neopixel_strand)
+    # pixels.Add -> "[pixels] Added NeoPixel strand on pin <gpio>"
+    add(serial, protomq, uid, strand)
 
-    # --- Assert -------------------------------------------------------
-    # One Filling strand! per color above, in order; none failed
-    assert_no_errors(serial, protomq, uid, neopixel_strand)
+    for name, color in colors:
+        # --- Act ------------------------------------------------------
+        # pixels.Write of color -> "[pixels]: Filling strand!"
+        write(serial, protomq, uid, strand, color)
+        # Blocks until the photo is taken and the model has answered
+        capture = hil_camera()
+        log.info("wrote %s to strand, %s saw %s (%s)", name, capture["model"],
+                 capture["result"]["neopixel"], capture["image"])
+
+        # --- Assert ---------------------------------------------------
+        assert capture["result"]["neopixel"] == {
+            "pixels_power_status": "on", "pixels_color": name}, capture
+
+    # pixels.Remove -> "[pixels] Removed pixel strand from pin: <gpio>"
+    remove(serial, protomq, uid, strand)
+    # RemoveStrand() clears the strand before releasing it
+    capture = hil_camera()
+    log.info("removed, %s saw %s (%s)", capture["model"],
+             capture["result"]["neopixel"], capture["image"])
+    assert capture["result"]["neopixel"] == {
+        "pixels_power_status": "off", "pixels_color": "none"}, capture
+
+    # No pixels failure on serial, and no error.component for the strand
+    assert_no_errors(serial, protomq, uid, strand)
 
 
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 def test_pixels_neopixel_on_off(board, secrets_name, flashed_board, serial,
-                                protomq, checkin, neopixel_strand):
+                                protomq, checkin, neopixel_strand, hil_camera):
+    """Turn a NeoPixel strand on (white), then off (black). After each
+    fill, the camera should see the strand lit white, then unlit."""
     # --- Arrange ------------------------------------------------------
+    strand = neopixel_strand
+    # 0xWWRRGGBB: RGB white (RGBW pixels' white stays off)
+    white = 0x00FFFFFF
+    # Every channel 0, which stays 0 through gamma and brightness: off
+    black = 0x00000000
     uid = checkin()
-    add(serial, protomq, uid, neopixel_strand)
 
-    # --- Act ----------------------------------------------------------
-    # White, then black (off), each held for HOLD_SECONDS
-    write_sequence(serial, protomq, uid, neopixel_strand, ON_OFF)
-    remove(serial, protomq, uid, neopixel_strand)
+    # pixels.Add -> "[pixels] Added NeoPixel strand on pin <gpio>"
+    add(serial, protomq, uid, strand)
 
-    # --- Assert -------------------------------------------------------
-    # One Filling strand! per color above, in order; none failed
-    assert_no_errors(serial, protomq, uid, neopixel_strand)
+    # --- Act: on ------------------------------------------------------
+    # pixels.Write of white -> "[pixels]: Filling strand!"
+    write(serial, protomq, uid, strand, white)
+    # Blocks until the photo is taken and the model has answered
+    capture = hil_camera()
+    log.info("wrote white, %s saw %s (%s)", capture["model"],
+             capture["result"]["neopixel"], capture["image"])
+
+    # --- Assert: on ---------------------------------------------------
+    assert capture["result"]["neopixel"] == {
+        "pixels_power_status": "on", "pixels_color": "white"}, capture
+
+    # --- Act: off -----------------------------------------------------
+    # pixels.Write of black -> "[pixels]: Filling strand!"
+    write(serial, protomq, uid, strand, black)
+    capture = hil_camera()
+    log.info("wrote black, %s saw %s (%s)", capture["model"],
+             capture["result"]["neopixel"], capture["image"])
+
+    # --- Assert: off --------------------------------------------------
+    assert capture["result"]["neopixel"] == {
+        "pixels_power_status": "off", "pixels_color": "none"}, capture
+
+    # pixels.Remove -> "[pixels] Removed pixel strand from pin: <gpio>"
+    remove(serial, protomq, uid, strand)
+    # RemoveStrand() clears the strand before releasing it
+    capture = hil_camera()
+    log.info("removed, %s saw %s (%s)", capture["model"],
+             capture["result"]["neopixel"], capture["image"])
+    assert capture["result"]["neopixel"] == {
+        "pixels_power_status": "off", "pixels_color": "none"}, capture
+
+    # No pixels failure on serial, and no error.component for the strand
+    assert_no_errors(serial, protomq, uid, strand)
 
 
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
@@ -138,6 +209,7 @@ def test_bug_remove_overflows_strand_slots(board, secrets_name,
     (or Add rejects a full controller with an error.component)."""
     # --- Arrange ------------------------------------------------------
     uid = checkin()
+    color = 0x11FF8040  # any color; what's shown isn't checked here
 
     # --- Act ----------------------------------------------------------
     # Only one strand is ever added at a time, so a controller that frees
@@ -146,7 +218,7 @@ def test_bug_remove_overflows_strand_slots(board, secrets_name,
         log.info("cycle %d/%d (MAX_PIXEL_STRANDS %d)", cycle,
                  OVERFLOW_CYCLES, MAX_PIXEL_STRANDS)
         add(serial, protomq, uid, neopixel_strand)
-        write(serial, protomq, uid, neopixel_strand, COLOR)
+        write(serial, protomq, uid, neopixel_strand, color)
         remove(serial, protomq, uid, neopixel_strand)
 
     # --- Assert -------------------------------------------------------
