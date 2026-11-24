@@ -8,8 +8,8 @@ import re
 
 log = logging.getLogger("hil.pixels")
 
-# The Add's brightness, 0-255; IO's initial brightness
-BRIGHTNESS = 128
+# The Add's brightness, 0-255; low enough that a lit strand doesn't blow out the camera
+BRIGHTNESS = 25
 # How long after checkin the DUT may take to handle a message, as the
 # checkin fixture allows for the checkin itself.
 CHECKIN_TIMEOUT = 30
