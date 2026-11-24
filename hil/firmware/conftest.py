@@ -538,7 +538,6 @@ class PixelStrand:
     pin: str               # the DUT data pin the broker sends, e.g. "D26"
     num: int               # pixels on the strand
     ordering: str          # a pixels.proto Order, e.g. "O_RGBW"
-    pin_clock: str = None  # a DotStar's DUT clock pin, e.g. "D4"
 
 
 @pytest.fixture
@@ -563,18 +562,6 @@ def neopixel_strand(board):
     except hil_probe.ProbeError as e:
         pytest.fail(f"board '{board.name}': {e}", pytrace=False)
     return PixelStrand("T_NEOPIXEL", pin, num, ordering)
-
-
-@pytest.fixture
-def dotstar_strand(board):
-    """The DotStar strand the board entry's dotstar_strand probe says is
-    wired to the DUT; skips the test if the entry has none."""
-    config = _probe_config(board, "dotstar_strand")
-    try:
-        pin, pin_clock, num, ordering = hil_probe.dotstar_strand(config)
-    except hil_probe.ProbeError as e:
-        pytest.fail(f"board '{board.name}': {e}", pytrace=False)
-    return PixelStrand("T_DOTSTAR", pin, num, ordering, pin_clock)
 
 
 @dataclass(frozen=True)

@@ -178,6 +178,7 @@ def test_pixels_remove_without_add(board, secrets_name, flashed_board,
     # --- Arrange ------------------------------------------------------
     # Nothing added on the strand's pin, so there's no strand to remove
     uid = checkin()
+    booted = serial.mark()  # skip the boot banner (rst:0x...) in CRASH_RE
     msg = {"pinData": neopixel_strand.pin}
 
     # --- Act ----------------------------------------------------------
@@ -193,22 +194,20 @@ def test_pixels_remove_without_add(board, secrets_name, flashed_board,
                                timeout=CHECKIN_TIMEOUT)
     # ...without removing anything, crashing or rebooting
     serial.assert_none(r"\[pixels\] Removed pixel strand")
-    serial.assert_none(CRASH_RE)
+    serial.assert_none(CRASH_RE, since=booted)
 
 
 @pytest.mark.parametrize("secrets_name", ["good"], indirect=True)
 def test_bug_remove_overflows_strand_slots(board, secrets_name,
                                            flashed_board, serial, protomq,
                                            checkin, neopixel_strand):
-    """Handle_Pixels_Remove() releases the strand but never frees its
-    slot: it neither deletes the PixelsHardware nor decrements
-    _num_strands. Handle_Pixels_Add() always takes slot _num_strands
-    without checking it against MAX_PIXEL_STRANDS, so the add after
-    MAX_PIXEL_STRANDS add/remove cycles on one strand writes past
-    _pixel_strands[], over _num_strands. Fails until Remove frees the slot
-    (or Add rejects a full controller with an error.component)."""
+    """
+    Issue: https://github.com/adafruit/Adafruit_Wippersnapper_Arduino/issues/1158
+    PR: https://github.com/adafruit/Adafruit_Wippersnapper_Arduino/pull/1159
+    """
     # --- Arrange ------------------------------------------------------
     uid = checkin()
+    booted = serial.mark()  # skip the boot banner (rst:0x...) in CRASH_RE
     color = 0x11FF8040  # any color; what's shown isn't checked here
 
     # --- Act ----------------------------------------------------------
@@ -224,5 +223,5 @@ def test_bug_remove_overflows_strand_slots(board, secrets_name,
     # --- Assert -------------------------------------------------------
     # Every cycle was handled above, in order; the DUT didn't crash or
     # reboot, and nothing failed
-    serial.assert_none(CRASH_RE)
+    serial.assert_none(CRASH_RE, since=booted)
     assert_no_errors(serial, protomq, uid, neopixel_strand)

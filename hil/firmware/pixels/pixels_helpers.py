@@ -1,6 +1,6 @@
 """Helpers shared by the pixels HIL tests: sending a strand's Add, Write
 and Remove, and expecting the DUT to handle each. A strand is the
-conftest's PixelStrand (the neopixel_strand and dotstar_strand fixtures).
+conftest's PixelStrand (the neopixel_strand fixture).
 """
 
 import logging
@@ -15,17 +15,6 @@ BRIGHTNESS = 128
 CHECKIN_TIMEOUT = 30
 # How long to watch for a component error after the last message
 NO_ERROR_WITHIN = 3
-# How long a color sequence holds each color, in seconds
-HOLD_SECONDS = 5
-# The colors a sequence writes, in order: 0xWWRRGGBB, white off (DotStars
-# ignore the most significant byte)
-RED, BLUE, GREEN = 0x00FF0000, 0x000000FF, 0x0000FF00
-SEQUENCE = (("red", RED), ("blue", BLUE), ("green", GREEN))
-# On, then off: RGB white (DotStars ignore the most significant byte, and
-# RGBW pixels' white stays off), then black. Every channel 0 is off:
-# gamma32() maps 0 to 0, and brightness scales 0 to 0.
-WHITE, BLACK = 0x00FFFFFF, 0x00000000
-ON_OFF = (("white", WHITE), ("black", BLACK))
 # The firmware's MAX_PIXEL_STRANDS (src/components/pixels/controller.h):
 # the strand slots PixelsController has
 MAX_PIXEL_STRANDS = 10
@@ -34,8 +23,6 @@ CRASH_RE = re.compile(r"Guru Meditation|Backtrace:|rst:0x|ESP Reset Reason")
 # The error.component message Handle_Pixels_Remove() publishes for a pin
 # with no strand
 NOT_FOUND = "Failed to find strand index!"
-# What AddNeoPixel()/AddDotStar() log each Type as
-TYPE_NAMES = {"T_NEOPIXEL": "NeoPixel", "T_DOTSTAR": "DotStar"}
 
 
 def gpio(pin):
@@ -48,17 +35,13 @@ def add(serial, protomq, uid, strand, brightness=BRIGHTNESS):
     msg = {"type": strand.type, "num": strand.num,
            "ordering": strand.ordering, "brightness": brightness,
            "pinData": strand.pin}
-    if strand.pin_clock is not None:
-        msg["pinDotstarClock"] = strand.pin_clock
     protomq.publish(uid, {"pixels": {"add": msg}})
     protomq.expect_b2d_message(uid, "pixels.add", match=msg, timeout=5)
-    # AddNeoPixel()/AddDotStar() log without a newline, then
-    # Handle_Pixels_Add() logs on the same line
-    added = (rf"\[pixels\] Added {TYPE_NAMES[strand.type]} strand on pin "
-             rf"{gpio(strand.pin)}")
-    if strand.pin_clock is not None:
-        added += rf" and clock pin {gpio(strand.pin_clock)}"
-    serial.expect(added + r"\b", timeout=CHECKIN_TIMEOUT, partial=True)
+    # AddNeoPixel() logs without a newline, then Handle_Pixels_Add() logs
+    # on the same line
+    serial.expect(rf"\[pixels\] Added NeoPixel strand on pin "
+                  rf"{gpio(strand.pin)}\b", timeout=CHECKIN_TIMEOUT,
+                  partial=True)
     serial.expect(rf"\[pixels\]: Added strand on Pin {strand.pin}\b",
                   timeout=5, partial=True)
 
@@ -70,24 +53,6 @@ def write(serial, protomq, uid, strand, color):
     protomq.publish(uid, {"pixels": {"write": msg}})
     protomq.expect_b2d_message(uid, "pixels.write", match=msg, timeout=5)
     serial.expect(r"^\[pixels\]: Filling strand!$", timeout=CHECKIN_TIMEOUT)
-
-
-def hold(protomq, uid, strand, name, color, seconds=HOLD_SECONDS):
-    """Hold strand at color, just written, for seconds, expecting no
-    error.component for it meanwhile."""
-    log.info("%s: holding %s (0x%08X) for %ss", strand.pin, name, color,
-             seconds)
-    protomq.assert_no_d2b_message(uid, "error.component",
-                                  match={"pin": strand.pin}, within=seconds)
-
-
-def write_sequence(serial, protomq, uid, strand, sequence=SEQUENCE,
-                   seconds=HOLD_SECONDS):
-    """Write each (name, color) in sequence to strand, holding each for
-    seconds."""
-    for name, color in sequence:
-        write(serial, protomq, uid, strand, color)
-        hold(protomq, uid, strand, name, color, seconds)
 
 
 def remove(serial, protomq, uid, strand):
