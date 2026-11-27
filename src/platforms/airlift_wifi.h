@@ -133,6 +133,7 @@ public:
     }
 
     // User-set network not found, print scan results to serial console
+#ifndef WS_HIL_BUILD // HIL CI logs are public: don't leak nearby SSIDs
     WS_DEBUG_PRINTLN("WipperSnapper found these WiFi networks: ");
     for (int i = 0; i < n; ++i) {
       WS_DEBUG_PRINTVAR(WiFi.SSID(i));
@@ -140,6 +141,7 @@ public:
       WS_DEBUG_PRINTVAR(WiFi.RSSI(i));
       WS_DEBUG_PRINTLN("dB");
     }
+#endif
 
     // nina-fw can't scan for hidden networks, so try connecting anyway
     WS_DEBUG_PRINTLN("WARNING: Your requested WiFi network was not found, "
